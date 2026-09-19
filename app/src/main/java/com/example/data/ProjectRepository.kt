@@ -59,6 +59,7 @@ class ProjectRepository(private val context: Context) {
           val currentFloor = obj.optInt("currentFloor", 1)
           val scanProgress = obj.optInt("scanProgress", 0)
           val status = obj.optString("status", "NEW")
+          val segmentCount = obj.optInt("segmentCount", 0)
 
           val bld = buildingCache.getOrPut(id) {
             createFreshBuilding(id, buildingName, floors)
@@ -87,6 +88,37 @@ class ProjectRepository(private val context: Context) {
 
     _projects.value = loaded
     return loaded
+  }
+
+  fun addScanSegment(projectId: String, segment: com.example.model.ScanSegment): Project? {
+    val project = getProjectById(projectId) ?: return null
+    val updatedSegments = project.segments + segment
+    val newProgress = (project.scanProgress + segment.coveragePercent).coerceIn(0, 100)
+
+    // Dynamically update building coverage
+    val currentBuilding = project.building ?: createFreshBuilding(project.id, project.buildingName, project.floors)
+    val updatedFloors = currentBuilding.floors.map { floor ->
+      if (floor.id == segment.floorId) {
+        floor.copy(coveragePercent = (floor.coveragePercent + segment.coveragePercent).coerceIn(0, 100))
+      } else {
+        floor
+      }
+    }
+    val updatedBuilding = currentBuilding.copy(
+      floors = updatedFloors,
+      overallCoveragePercent = newProgress
+    )
+
+    val updatedProject = project.copy(
+      segments = updatedSegments,
+      scanProgress = newProgress,
+      status = if (newProgress >= 90) "COMPLETED" else "SCANNING",
+      updatedAt = System.currentTimeMillis(),
+      building = updatedBuilding
+    )
+
+    saveProject(updatedProject)
+    return updatedProject
   }
 
   fun saveProject(project: Project): Boolean {
@@ -121,6 +153,7 @@ class ProjectRepository(private val context: Context) {
           put("currentFloor", p.currentFloor)
           put("scanProgress", p.scanProgress)
           put("status", p.status)
+          put("segmentCount", p.segments.size)
         }
         jsonArray.put(obj)
       }

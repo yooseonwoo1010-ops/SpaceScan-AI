@@ -90,6 +90,8 @@ fun Indoor2DMapView(
   recommendation: AiRecommendation?,
   selectedRoomId: String?,
   onRoomSelected: (Room) -> Unit,
+  detectedPlanes: List<com.example.model.ScanPlane> = emptyList(),
+  accumulatedPoints: List<com.example.model.ScanPoint> = emptyList(),
   showFullLegend: Boolean = true,
   modifier: Modifier = Modifier
 ) {
@@ -325,6 +327,46 @@ fun Indoor2DMapView(
           })
         }
 
+        // 3. Draw Real Detected Planes from ARCore
+        if (detectedPlanes.isNotEmpty()) {
+          for (plane in detectedPlanes) {
+            val centerScreen = metersToScreen(plane.centerX, -plane.centerZ)
+            val pWidth = plane.extentX * baseScale
+            val pHeight = plane.extentZ * baseScale
+
+            val isFloor = plane.classification == com.example.model.PlaneClassification.FLOOR
+            val planeColor = if (isFloor) ScanCompletedGreen else ElectricBlue
+
+            drawRoundRect(
+              color = planeColor.copy(alpha = if (isFloor) 0.25f else 0.40f),
+              topLeft = Offset(centerScreen.x - pWidth / 2f, centerScreen.y - pHeight / 2f),
+              size = Size(pWidth.coerceAtLeast(10f), pHeight.coerceAtLeast(10f)),
+              cornerRadius = CornerRadius(4f, 4f)
+            )
+            drawRoundRect(
+              color = planeColor,
+              topLeft = Offset(centerScreen.x - pWidth / 2f, centerScreen.y - pHeight / 2f),
+              size = Size(pWidth.coerceAtLeast(10f), pHeight.coerceAtLeast(10f)),
+              cornerRadius = CornerRadius(4f, 4f),
+              style = Stroke(width = 1.5f)
+            )
+          }
+        }
+
+        // Draw Real Point Cloud on 2D Map (Green spatial dots)
+        if (accumulatedPoints.isNotEmpty()) {
+          val step = (accumulatedPoints.size / 300).coerceAtLeast(1)
+          for (i in accumulatedPoints.indices step step) {
+            val pt = accumulatedPoints[i]
+            val ptScreen = metersToScreen(pt.x, -pt.z)
+            drawCircle(
+              color = ScanCompletedGreen.copy(alpha = 0.6f),
+              radius = 2.5f,
+              center = ptScreen
+            )
+          }
+        }
+
         // 4. Draw Breadcrumbs (Visited Path)
         if (breadcrumbs.size >= 2) {
           val breadcrumbPath = Path()
@@ -450,7 +492,7 @@ fun Indoor2DMapView(
         )
       }
 
-      val hasMapData = floor.rooms.isNotEmpty() || floor.corridors.isNotEmpty()
+      val hasMapData = floor.rooms.isNotEmpty() || floor.corridors.isNotEmpty() || detectedPlanes.isNotEmpty() || accumulatedPoints.isNotEmpty() || breadcrumbs.isNotEmpty()
       if (!hasMapData) {
         Box(
           modifier = Modifier.fillMaxSize(),

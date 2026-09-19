@@ -16,5 +16,6 @@ data class Project(
   val rooms: List<Room> = emptyList(),
   val currentPosition: UserPose? = null,
   val status: String = "NEW", // "NEW" | "SCANNING" | "COMPLETED"
+  val segments: List<ScanSegment> = emptyList(),
   val building: Building? = null
 )

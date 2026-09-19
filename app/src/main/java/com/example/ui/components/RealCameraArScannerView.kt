@@ -4,6 +4,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -11,9 +12,12 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,16 +34,25 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -56,31 +69,41 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.ar.ArCoreScanEngine
 import com.example.model.AiRecommendation
+import com.example.model.ArCoreTrackingStatus
+import com.example.model.CameraPoseData
 import com.example.model.Floor
-import com.example.model.Room
-import com.example.model.ScanStatus
+import com.example.model.PlaneClassification
+import com.example.model.Point3D
+import com.example.model.ScanPlane
+import com.example.model.ScanPoint
+import com.example.model.ScanSegment
 import com.example.model.UserPose
 import com.example.ui.theme.CyanNeon
 import com.example.ui.theme.ElectricBlue
+import com.example.ui.theme.ScanCompletedGreen
+import com.example.ui.theme.ScanInProgressAmber
+import com.example.ui.theme.ScanRescanRed
 import com.example.ui.theme.ScanVisualSystem
 import com.example.ui.theme.SpaceCardBorder
 import com.example.ui.theme.SpaceDarkBg
+import com.example.ui.theme.SpaceSurfaceDark
+import com.example.ui.theme.SpaceSurfaceElevated
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
-import kotlin.random.Random
 
 @Composable
 fun RealCameraArScannerView(
@@ -88,48 +111,52 @@ fun RealCameraArScannerView(
   userPose: UserPose,
   aiRecommendation: AiRecommendation?,
   isDemoMode: Boolean,
+  scanEngine: ArCoreScanEngine? = null,
   onHeadingRotated: (Float) -> Unit,
   onToggleDemoMode: () -> Unit = {},
+  onScanSegmentCreated: (ScanSegment) -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
 
-  var hasCameraHardware by remember { mutableStateOf(true) }
+  // Collect ARCore States if engine is present
+  val hardwareStatus = scanEngine?.hardwareStatus?.collectAsState()?.value
+  val sessionStats = scanEngine?.sessionStats?.collectAsState()?.value
+  val accumulatedPoints = scanEngine?.accumulatedPoints?.collectAsState()?.value ?: emptyList()
+  val framePoints = scanEngine?.currentFramePoints?.collectAsState()?.value ?: emptyList()
+  val detectedPlanes = scanEngine?.detectedPlanes?.collectAsState()?.value ?: emptyList()
+  val cameraPath = scanEngine?.cameraPath?.collectAsState()?.value ?: emptyList()
+
+  val isScanning = sessionStats?.isScanning ?: false
+  val trackingStatus = sessionStats?.trackingStatus ?: if (isDemoMode) ArCoreTrackingStatus.TRACKING else ArCoreTrackingStatus.PAUSED
+
+  var showDebugPanel by remember { mutableStateOf(false) }
   var cameraBindingError by remember { mutableStateOf(false) }
 
-  // Scanning laser line animation
+  // Scanning laser animation
   val infiniteTransition = rememberInfiniteTransition(label = "ar_scanner")
-  val laserPosition by infiniteTransition.animateFloat(
-    initialValue = 0.12f,
-    targetValue = 0.88f,
+  val laserSweep by infiniteTransition.animateFloat(
+    initialValue = 0.1f,
+    targetValue = 0.9f,
     animationSpec = infiniteRepeatable(
-      animation = tween(2400, easing = LinearEasing),
+      animation = tween(2200, easing = LinearEasing),
       repeatMode = RepeatMode.Reverse
     ),
     label = "laser_sweep"
   )
 
-  // AR Pulse animation
   val pulseRing by infiniteTransition.animateFloat(
-    initialValue = 0.6f,
+    initialValue = 0.5f,
     targetValue = 1.0f,
     animationSpec = infiniteRepeatable(
-      animation = tween(1200, easing = FastOutSlowInEasing),
+      animation = tween(1400, easing = FastOutSlowInEasing),
       repeatMode = RepeatMode.Reverse
     ),
     label = "pulse_ring"
   )
 
-  // Simulated 3D feature points for LiDAR overlay
-  val featurePoints = remember(floor.id) {
-    val rng = Random(floor.id.hashCode() + 42)
-    List(120) {
-      Triple(rng.nextFloat(), rng.nextFloat(), rng.nextInt(4))
-    }
-  }
-
-  // Heading calculation relative to AI recommendation target
+  // Target bearing for AI navigation arrow
   val targetBearing = remember(userPose, aiRecommendation) {
     if (aiRecommendation != null) {
       val targetRoom = floor.rooms.find { it.id == aiRecommendation.nextTargetRoomId }
@@ -141,34 +168,34 @@ fun RealCameraArScannerView(
       } else 90f
     } else 90f
   }
-
-  // Angle difference between current camera heading and target
   val headingDiff = ((targetBearing - userPose.yawDegrees + 540f) % 360f) - 180f
-
-  val hasScannedData = isDemoMode || floor.rooms.isNotEmpty() || floor.coveragePercent > 0
 
   Box(
     modifier = modifier
       .fillMaxSize()
       .background(SpaceDarkBg)
       .clip(RoundedCornerShape(14.dp))
-      .border(1.2.dp, SpaceCardBorder, RoundedCornerShape(14.dp))
+      .border(1.2.dp, if (isScanning) CyanNeon.copy(alpha = 0.8f) else SpaceCardBorder, RoundedCornerShape(14.dp))
       .pointerInput(Unit) {
         detectDragGestures { change, dragAmount ->
           change.consume()
-          // Dragging rotates camera heading smoothly
           onHeadingRotated(dragAmount.x * 0.25f)
         }
       }
   ) {
-    // 1. Camera Feed: Real Phone CameraX or Photorealistic School Corridor Demo
+    // 1. Camera Feed Layer (GLSurfaceView for ARCore or CameraX Fallback or Photorealistic Demo)
     if (isDemoMode) {
-      // Photorealistic School Corridor Perspective View (Demo Camera Mode ONLY)
       DemoCorridorCameraView(
         yawDegrees = userPose.yawDegrees,
         modifier = Modifier.fillMaxSize()
       )
-    } else if (hasCameraHardware && !cameraBindingError) {
+    } else if (scanEngine != null && hardwareStatus?.arCoreAvailable == true) {
+      ArGlSurfaceView(
+        scanEngine = scanEngine,
+        modifier = Modifier.fillMaxSize()
+      )
+    } else if (!cameraBindingError) {
+      // CameraX fallback for non-ARCore devices
       AndroidView(
         factory = { ctx ->
           val previewView = PreviewView(ctx).apply {
@@ -203,382 +230,451 @@ fun RealCameraArScannerView(
       RealScannerViewfinderBackground(modifier = Modifier.fillMaxSize())
     }
 
-    // 2. AR 3D Scan Spatial Overlay: Mesh, Point Cloud, Bounding Boxes, & 6-Color System
+    // 2. Real-time AR Point Cloud & Detected Planes Projection Layer
     Canvas(modifier = Modifier.fillMaxSize()) {
       val w = size.width
       val h = size.height
 
-      // Corridor 3D Perspective vanishing point anchored by user's heading
-      val vpX = w * 0.5f + (userPose.yawDegrees - 90f) * 2.2f
-      val vpY = h * 0.48f
+      val camPose = sessionStats?.currentPose ?: CameraPoseData(
+        x = userPose.x,
+        y = userPose.z,
+        z = -userPose.y,
+        yawDegrees = userPose.yawDegrees
+      )
+      val camYawRad = Math.toRadians(camPose.yawDegrees.toDouble()).toFloat()
 
-      if (hasScannedData) {
-        // A. AR Structure Overlay: Left Wall (🟩 스캔 완료 - COMPLETED)
-      // Section 15: 스캔 완료 -> 일반 화면처럼 보이게 매우 약한 투명도 (alpha ~ 0.10)
-      val leftWallPath = Path().apply {
-        moveTo(0f, 0f)
-        lineTo(w * 0.22f, vpY * 0.45f)
-        lineTo(w * 0.22f, h - (h - vpY) * 0.45f)
-        lineTo(0f, h)
-        close()
-      }
-      drawPath(
-        path = leftWallPath,
-        color = ScanVisualSystem.Completed.copy(alpha = ScanVisualSystem.getCameraOverlayAlpha(ScanStatus.COMPLETED))
-      )
-      drawPath(
-        path = leftWallPath,
-        color = ScanVisualSystem.Completed.copy(alpha = 0.35f),
-        style = Stroke(width = 1.5f)
-      )
+      // A. Real Detected Planes Rendering (Green for floors, Blue for walls)
+      if (!isDemoMode && detectedPlanes.isNotEmpty()) {
+        for (plane in detectedPlanes) {
+          if (plane.polygonPoints.size >= 3) {
+            val projectedPoly = mutableListOf<Offset>()
+            for (pt in plane.polygonPoints) {
+              val dx = pt.x - camPose.x
+              val dy = pt.y - camPose.y
+              val dz = pt.z - camPose.z
 
-      // Subtle green wireframe grid on left wall
-      for (i in 1..4) {
-        val frac = i / 5f
-        val topPt = Offset(w * 0.22f * frac, vpY * 0.45f * frac)
-        val btmPt = Offset(w * 0.22f * frac, h - (h - vpY) * (1f - frac * 0.55f))
-        drawLine(
-          color = ScanVisualSystem.Completed.copy(alpha = 0.22f),
-          start = topPt,
-          end = btmPt,
-          strokeWidth = 1f
-        )
-      }
+              // Rotate by camera heading
+              val xCam = dx * cos(-camYawRad) - dz * sin(-camYawRad)
+              val zCam = dx * sin(-camYawRad) + dz * cos(-camYawRad)
+              val yCam = dy
 
-      // B. AR Structure Overlay: Right Wall (🟦 현재 스캔 진행 중 - IN_PROGRESS)
-      // Section 15: 반투명 BLUE (alpha ~ 0.42)
-      val rightWallPath = Path().apply {
-        moveTo(w, 0f)
-        lineTo(w * 0.78f, vpY * 0.45f)
-        lineTo(w * 0.78f, h - (h - vpY) * 0.45f)
-        lineTo(w, h)
-        close()
-      }
-      drawPath(
-        path = rightWallPath,
-        color = ScanVisualSystem.InProgress.copy(alpha = ScanVisualSystem.getCameraOverlayAlpha(ScanStatus.IN_PROGRESS))
-      )
-      drawPath(
-        path = rightWallPath,
-        color = ScanVisualSystem.InProgress,
-        style = Stroke(width = 2f)
-      )
+              if (zCam > 0.2f) {
+                val focal = (w * 0.75f) / zCam
+                val sx = w * 0.5f + xCam * focal
+                val sy = h * 0.5f - yCam * focal
+                projectedPoly.add(Offset(sx, sy))
+              }
+            }
 
-      // Active wireframe mesh on right wall
-      for (i in 1..4) {
-        val frac = i / 5f
-        val topPt = Offset(w - (w * 0.22f) * frac, vpY * 0.45f * frac)
-        val btmPt = Offset(w - (w * 0.22f) * frac, h - (h - vpY) * (1f - frac * 0.55f))
-        drawLine(
-          color = ScanVisualSystem.InProgress.copy(alpha = 0.5f),
-          start = topPt,
-          end = btmPt,
-          strokeWidth = 1.2f
-        )
-      }
+            if (projectedPoly.size >= 3) {
+              val polyPath = Path().apply {
+                moveTo(projectedPoly[0].x, projectedPoly[0].y)
+                for (i in 1 until projectedPoly.size) {
+                  lineTo(projectedPoly[i].x, projectedPoly[i].y)
+                }
+                close()
+              }
 
-      // C. AR Structure Overlay: Ceiling (🟨 품질 낮음 / 추가 촬영 권장 - LOW_QUALITY)
-      // Section 15: 반투명 YELLOW (alpha ~ 0.48)
-      val ceilingPath = Path().apply {
-        moveTo(0f, 0f)
-        lineTo(w, 0f)
-        lineTo(w * 0.78f, vpY * 0.45f)
-        lineTo(w * 0.22f, vpY * 0.45f)
-        close()
-      }
-      drawPath(
-        path = ceilingPath,
-        color = ScanVisualSystem.LowQuality.copy(alpha = ScanVisualSystem.getCameraOverlayAlpha(ScanStatus.LOW_QUALITY))
-      )
-      drawPath(
-        path = ceilingPath,
-        color = ScanVisualSystem.LowQuality.copy(alpha = 0.6f),
-        style = Stroke(width = 1.5f)
-      )
+              val planeColor = when (plane.classification) {
+                PlaneClassification.FLOOR -> ScanCompletedGreen
+                PlaneClassification.WALL -> ElectricBlue
+                PlaneClassification.CEILING -> CyanNeon
+                else -> Color(0xFF64748B)
+              }
 
-      // D. AR Structure Overlay: Floor (🟩 스캔 완료 - COMPLETED)
-      // Perspective depth grid lines
-      val floorPath = Path().apply {
-        moveTo(0f, h)
-        lineTo(w, h)
-        lineTo(w * 0.78f, h - (h - vpY) * 0.45f)
-        lineTo(w * 0.22f, h - (h - vpY) * 0.45f)
-        close()
-      }
-      drawPath(
-        path = floorPath,
-        color = ScanVisualSystem.Completed.copy(alpha = 0.12f)
-      )
-      // Floor perspective guide lines
-      for (i in 1..3) {
-        val frac = i / 4f
-        val startPt = Offset(w * frac, h)
-        val endPt = Offset(w * 0.22f + (w * 0.56f) * frac, h - (h - vpY) * 0.45f)
-        drawLine(
-          color = ScanVisualSystem.Completed.copy(alpha = 0.35f),
-          start = startPt,
-          end = endPt,
-          strokeWidth = 1f
-        )
-      }
-
-      // E. Front Door (🟪 AI 추천 대상 - AI_RECOMMENDED)
-      // Section 15: 반투명 PURPLE (alpha ~ 0.52)
-      val doorLeft = w * 0.43f
-      val doorTop = vpY * 0.55f
-      val doorW = w * 0.14f
-      val doorH = (h - vpY) * 0.55f
-      drawRoundRect(
-        color = ScanVisualSystem.AiRecommended.copy(alpha = ScanVisualSystem.getCameraOverlayAlpha(ScanStatus.AI_RECOMMENDED)),
-        topLeft = Offset(doorLeft, doorTop),
-        size = Size(doorW, doorH),
-        cornerRadius = CornerRadius(6f, 6f)
-      )
-      drawRoundRect(
-        color = ScanVisualSystem.AiRecommended,
-        topLeft = Offset(doorLeft, doorTop),
-        size = Size(doorW, doorH),
-        cornerRadius = CornerRadius(6f, 6f),
-        style = Stroke(width = 2.5f * pulseRing)
-      )
-
-      // F. North Wall Defect Area (🟥 재스캔 필요 - RESCAN_NEEDED)
-      // Red warning hatch overlay
-      val defectLeft = w * 0.08f
-      val defectTop = h * 0.38f
-      val defectW = w * 0.12f
-      val defectH = h * 0.24f
-      drawRoundRect(
-        color = ScanVisualSystem.RescanNeeded.copy(alpha = ScanVisualSystem.getCameraOverlayAlpha(ScanStatus.RESCAN_NEEDED)),
-        topLeft = Offset(defectLeft, defectTop),
-        size = Size(defectW, defectH),
-        cornerRadius = CornerRadius(4f, 4f)
-      )
-      drawRoundRect(
-        color = ScanVisualSystem.RescanNeeded,
-        topLeft = Offset(defectLeft, defectTop),
-        size = Size(defectW, defectH),
-        cornerRadius = CornerRadius(4f, 4f),
-        style = Stroke(width = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f)))
-      )
-
-      // G. 3D LiDAR Point Cloud Particles (Spatial depth cloud)
-      featurePoints.forEach { pt ->
-        val px = w * pt.first
-        val py = h * pt.second
-        val ptColor = when (pt.third) {
-          0 -> ScanVisualSystem.Completed.copy(alpha = 0.75f)
-          1 -> ScanVisualSystem.InProgress.copy(alpha = 0.85f)
-          2 -> ScanVisualSystem.AiRecommended.copy(alpha = 0.8f)
-          else -> CyanNeon.copy(alpha = 0.8f)
+              // Draw translucent plane mesh
+              drawPath(
+                path = polyPath,
+                color = planeColor.copy(alpha = if (isScanning) 0.28f else 0.12f)
+              )
+              // Draw crisp plane boundary outline
+              drawPath(
+                path = polyPath,
+                color = planeColor.copy(alpha = 0.85f),
+                style = Stroke(width = 2.0f)
+              )
+            }
+          }
         }
+      }
+
+      // B. Real Accumulated 3D Point Cloud Rendering (Perspective Projected)
+      if (!isDemoMode && accumulatedPoints.isNotEmpty()) {
+        val sampleStep = (accumulatedPoints.size / 1200).coerceAtLeast(1)
+        for (i in accumulatedPoints.indices step sampleStep) {
+          val pt = accumulatedPoints[i]
+          val dx = pt.x - camPose.x
+          val dy = pt.y - camPose.y
+          val dz = pt.z - camPose.z
+
+          val xCam = dx * cos(-camYawRad) - dz * sin(-camYawRad)
+          val zCam = dx * sin(-camYawRad) + dz * cos(-camYawRad)
+          val yCam = dy
+
+          if (zCam > 0.15f) {
+            val focal = (w * 0.75f) / zCam
+            val sx = w * 0.5f + xCam * focal
+            val sy = h * 0.5f - yCam * focal
+
+            if (sx in 0f..w && sy in 0f..h) {
+              val ptSize = (3.5f / zCam).coerceIn(1.5f, 7.0f)
+              drawCircle(
+                color = ScanCompletedGreen.copy(alpha = (pt.confidence * 0.85f).coerceIn(0.3f, 0.95f)),
+                radius = ptSize,
+                center = Offset(sx, sy)
+              )
+            }
+          }
+        }
+      }
+
+      // C. Active Frame Point Cloud (Electric Blue / Cyan Highlights)
+      if (!isDemoMode && framePoints.isNotEmpty() && isScanning) {
+        for (pt in framePoints) {
+          val dx = pt.x - camPose.x
+          val dy = pt.y - camPose.y
+          val dz = pt.z - camPose.z
+
+          val xCam = dx * cos(-camYawRad) - dz * sin(-camYawRad)
+          val zCam = dx * sin(-camYawRad) + dz * cos(-camYawRad)
+          val yCam = dy
+
+          if (zCam > 0.15f) {
+            val focal = (w * 0.75f) / zCam
+            val sx = w * 0.5f + xCam * focal
+            val sy = h * 0.5f - yCam * focal
+
+            if (sx in 0f..w && sy in 0f..h) {
+              drawCircle(
+                color = CyanNeon.copy(alpha = 0.9f),
+                radius = 3.5f,
+                center = Offset(sx, sy)
+              )
+            }
+          }
+        }
+      }
+
+      // D. Laser Sweep Scan Line (Visible during active scanning)
+      if (isScanning) {
+        val sweepY = h * laserSweep
+        drawLine(
+          brush = Brush.horizontalGradient(
+            colors = listOf(
+              Color.Transparent,
+              CyanNeon.copy(alpha = 0.85f),
+              ElectricBlue,
+              CyanNeon.copy(alpha = 0.85f),
+              Color.Transparent
+            )
+          ),
+          start = Offset(0f, sweepY),
+          end = Offset(w, sweepY),
+          strokeWidth = 2.5f
+        )
+        // Subtle scan glow bar
+        drawRect(
+          brush = Brush.verticalGradient(
+            colors = listOf(
+              CyanNeon.copy(alpha = 0.15f),
+              Color.Transparent
+            ),
+            startY = sweepY - 24f,
+            endY = sweepY + 24f
+          ),
+          topLeft = Offset(0f, sweepY - 24f),
+          size = Size(w, 48f)
+        )
+      }
+
+      // E. Central AR Reticle & Crosshair
+      val cx = w * 0.5f
+      val cy = h * 0.5f
+      val reticleColor = if (isScanning) CyanNeon else Color.White.copy(alpha = 0.6f)
+
+      drawCircle(
+        color = reticleColor.copy(alpha = 0.4f),
+        radius = 24.dp.toPx(),
+        center = Offset(cx, cy),
+        style = Stroke(width = 1.2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f)))
+      )
+      drawCircle(
+        color = reticleColor,
+        radius = 3.dp.toPx(),
+        center = Offset(cx, cy)
+      )
+      // Small cross marks
+      drawLine(reticleColor, Offset(cx - 14.dp.toPx(), cy), Offset(cx - 6.dp.toPx(), cy), 1.5f)
+      drawLine(reticleColor, Offset(cx + 6.dp.toPx(), cy), Offset(cx + 14.dp.toPx(), cy), 1.5f)
+      drawLine(reticleColor, Offset(cx, cy - 14.dp.toPx()), Offset(cx, cy - 6.dp.toPx()), 1.5f)
+      drawLine(reticleColor, Offset(cx, cy + 6.dp.toPx()), Offset(cx, cy + 14.dp.toPx()), 1.5f)
+
+      // F. AI Direction Guidance Badge in AR View
+      if (aiRecommendation != null && kotlin.math.abs(headingDiff) > 20f) {
+        val arrowDir = if (headingDiff > 0) 1 else -1
+        val arrowX = if (arrowDir > 0) w - 36.dp.toPx() else 36.dp.toPx()
+        val arrowColor = Color(0xFFC084FC)
+
         drawCircle(
-          color = ptColor,
-          radius = 2.2f,
-          center = Offset(px, py)
+          color = arrowColor.copy(alpha = 0.25f),
+          radius = 20.dp.toPx() * pulseRing,
+          center = Offset(arrowX, cy)
         )
       }
     }
 
-      // H. Moving LiDAR Laser Scan Sweep Line
-      val laserY = h * laserPosition
-      drawLine(
-        color = CyanNeon.copy(alpha = 0.85f),
-        start = Offset(w * 0.05f, laserY),
-        end = Offset(w * 0.95f, laserY),
-        strokeWidth = 2f,
-        cap = StrokeCap.Round
-      )
-      // Laser beam vertical glow band
-      drawRect(
-        brush = Brush.verticalGradient(
-          colors = listOf(
-            CyanNeon.copy(alpha = 0f),
-            CyanNeon.copy(alpha = 0.25f),
-            CyanNeon.copy(alpha = 0f)
-          ),
-          startY = laserY - 14f,
-          endY = laserY + 14f
-        ),
-        topLeft = Offset(w * 0.05f, laserY - 14f),
-        size = Size(w * 0.9f, 28f)
-      )
-
-      // I. Active Scan Boundary Overlay Reticle (Section 5)
-      drawScanBoundaryReticle(w, h, CyanNeon)
-    }
-
-    if (hasScannedData) {
-      // 3. AR Floating Labels on Structures (Demo or Scanned data)
-      // Left wall: 🟩 스캔 완료
-      StructureArBadge(
-        text = "왼쪽 벽: 🟩 스캔 완료",
-        badgeColor = ScanVisualSystem.Completed,
-        modifier = Modifier
-          .align(Alignment.CenterStart)
-          .padding(start = 12.dp)
-      )
-
-      // Right wall: 🟦 스캔 중
-      StructureArBadge(
-        text = "오른쪽 벽: 🟦 스캔 중",
-        badgeColor = ScanVisualSystem.InProgress,
-        modifier = Modifier
-          .align(Alignment.CenterEnd)
-          .padding(end = 12.dp)
-      )
-
-      // Ceiling: 🟨 추가 스캔 필요
-      StructureArBadge(
-        text = "천장: 🟨 추가 스캔 필요",
-        badgeColor = ScanVisualSystem.LowQuality,
-        modifier = Modifier
-          .align(Alignment.TopCenter)
-          .padding(top = 44.dp)
-      )
-
-      // Defect corner: 🟥 재스캔 필요
-      StructureArBadge(
-        text = "201호 북쪽: 🟥 재스캔 필요",
-        badgeColor = ScanVisualSystem.RescanNeeded,
-        modifier = Modifier
-          .align(Alignment.BottomStart)
-          .padding(start = 12.dp, bottom = 48.dp)
-      )
-
-      // Next target door: 🟪 AI 추천
-      StructureArBadge(
-        text = "앞쪽 203호: 🟪 AI 추천 (24m)",
-        badgeColor = ScanVisualSystem.AiRecommended,
-        modifier = Modifier
-          .align(Alignment.Center)
-          .padding(bottom = 20.dp)
-      )
-
-      // 4. AR Directional Guidance Indicator towards AI Next Target (Section 10)
-      ArDirectionalGuideBanner(
-        headingDiff = headingDiff,
-        recommendation = aiRecommendation,
-        modifier = Modifier
-          .align(Alignment.BottomCenter)
-          .padding(bottom = 8.dp)
-      )
-
-      // 5. Real-time Object Recognition HUD Card (Section 9)
-      AiObjectRecognitionHudCard(
-        currentRoomName = "2F 중앙 복도",
-        completionRate = 87,
-        recognizedObjects = "벽 4 · 문 3 · 창문 6 · 계단 1",
-        aiAnalysis = "현재 복도 구조 확보됨 (오른쪽 벽 데이터 보강 중)",
-        modifier = Modifier
-          .align(Alignment.TopStart)
-          .padding(top = 8.dp, start = 8.dp)
-      )
-    } else {
-      // Clean Empty State for Fresh / Real Projects (Section 6 & 20)
-      Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
+    // 3. Top HUD: Real Tracking Status & Sensors State
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 10.dp, vertical = 8.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      // Left: Real ARCore Tracking Status Badge
+      Surface(
+        color = Color(0xCC0B1120),
+        shape = RoundedCornerShape(20.dp),
+        border = androidx.compose.foundation.BorderStroke(
+          0.8.dp,
+          when (trackingStatus) {
+            ArCoreTrackingStatus.TRACKING -> ScanCompletedGreen.copy(alpha = 0.8f)
+            ArCoreTrackingStatus.PAUSED -> ScanInProgressAmber.copy(alpha = 0.8f)
+            else -> ScanRescanRed.copy(alpha = 0.8f)
+          }
+        )
       ) {
-        Column(
-          horizontalAlignment = Alignment.CenterHorizontally,
-          modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xCC0B132B))
-            .border(1.dp, SpaceCardBorder, RoundedCornerShape(12.dp))
-            .padding(horizontal = 20.dp, vertical = 14.dp)
+        Row(
+          modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+          verticalAlignment = Alignment.CenterVertically
         ) {
+          Box(
+            modifier = Modifier
+              .size(8.dp)
+              .background(
+                color = when (trackingStatus) {
+                  ArCoreTrackingStatus.TRACKING -> ScanCompletedGreen
+                  ArCoreTrackingStatus.PAUSED -> ScanInProgressAmber
+                  else -> ScanRescanRed
+                },
+                shape = CircleShape
+              )
+          )
+          Spacer(modifier = Modifier.width(6.dp))
           Text(
-            text = "아직 스캔 데이터 없음",
+            text = if (isDemoMode) "데모 모드 (DEMO MODE)" else trackingStatus.label,
             color = Color.White,
-            fontSize = 15.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold
           )
-          Spacer(modifier = Modifier.height(4.dp))
+          if (!isDemoMode) {
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+              text = trackingStatus.dots,
+              color = when (trackingStatus) {
+                ArCoreTrackingStatus.TRACKING -> ScanCompletedGreen
+                ArCoreTrackingStatus.PAUSED -> ScanInProgressAmber
+                else -> ScanRescanRed
+              },
+              fontSize = 9.sp
+            )
+          }
+        }
+      }
+
+      // Right: Controls (Debug toggle & Demo/Real mode switch)
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        // Debug Panel Toggle
+        IconButton(
+          onClick = { showDebugPanel = !showDebugPanel },
+          modifier = Modifier
+            .size(30.dp)
+            .background(Color(0xCC0B1120), CircleShape)
+        ) {
+          Icon(
+            imageVector = Icons.Default.BugReport,
+            contentDescription = "디버그 패널",
+            tint = if (showDebugPanel) CyanNeon else Color(0xFF94A3B8),
+            modifier = Modifier.size(16.dp)
+          )
+        }
+
+        // Demo / Real Toggle Pill
+        Surface(
+          color = if (isDemoMode) Color(0xFF7C3AED).copy(alpha = 0.35f) else Color(0xCC0B1120),
+          shape = RoundedCornerShape(20.dp),
+          border = androidx.compose.foundation.BorderStroke(
+            0.8.dp,
+            if (isDemoMode) Color(0xFFC084FC) else SpaceCardBorder
+          ),
+          modifier = Modifier.clickable { onToggleDemoMode() }
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = if (isDemoMode) "DEMO" else "REAL SCAN",
+              color = if (isDemoMode) Color(0xFFE9D5FF) else CyanNeon,
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Bold
+            )
+          }
+        }
+      }
+    }
+
+    // 4. Collapsible Real-Time Debug Info Panel
+    AnimatedVisibility(
+      visible = showDebugPanel,
+      enter = fadeIn(),
+      exit = fadeOut(),
+      modifier = Modifier
+        .align(Alignment.TopStart)
+        .padding(top = 44.dp, start = 10.dp)
+    ) {
+      Surface(
+        color = Color(0xEE0B1120),
+        shape = RoundedCornerShape(8.dp),
+        border = androidx.compose.foundation.BorderStroke(0.8.dp, CyanNeon.copy(alpha = 0.5f))
+      ) {
+        Column(modifier = Modifier.padding(8.dp)) {
           Text(
-            text = "카메라를 움직여 스캔하세요",
+            text = "ARCore Spatial Telemetry",
             color = CyanNeon,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold
+          )
+          Spacer(modifier = Modifier.height(3.dp))
+          Text(
+            text = "FPS: ${sessionStats?.fps ?: 30} | Depth: ${if (hardwareStatus?.depthSupported == true) "ON" else "OFF"}",
+            color = Color(0xFFCBD5E1),
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+          )
+          Text(
+            text = "Points: ${accumulatedPoints.size} (Frame: ${framePoints.size})",
+            color = Color(0xFFCBD5E1),
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+          )
+          Text(
+            text = "Planes: ${detectedPlanes.size} | Segments: ${sessionStats?.segmentsCount ?: 0}",
+            color = Color(0xFFCBD5E1),
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+          )
+          val pose = sessionStats?.currentPose
+          Text(
+            text = "Pose: X=${String.format("%.2f", pose?.x ?: 0f)} Y=${String.format("%.2f", pose?.y ?: 0f)} Z=${String.format("%.2f", pose?.z ?: 0f)}",
+            color = Color(0xFFCBD5E1),
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+          )
+          Text(
+            text = "Heading: ${String.format("%.1f", userPose.yawDegrees)}° | Progress: ${sessionStats?.scanProgress ?: 0}%",
+            color = Color(0xFFCBD5E1),
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
           )
         }
       }
-
-      // Initial HUD Card for Real Scan
-      AiObjectRecognitionHudCard(
-        currentRoomName = "${floor.name.ifEmpty { floor.id }} 미스캔 구역",
-        completionRate = floor.coveragePercent,
-        recognizedObjects = "스캔 준비 중",
-        aiAnalysis = "카메라를 천천히 이동하며 벽면과 바닥을 스캔하세요.",
-        modifier = Modifier
-          .align(Alignment.TopStart)
-          .padding(top = 8.dp, start = 8.dp)
-      )
     }
 
-    // 6. Camera Status & Compass Heading HUD (Section 6 & 8)
-    Column(
+    // 5. Bottom Live Scan Control Action Bar
+    Box(
       modifier = Modifier
-        .align(Alignment.TopEnd)
-        .padding(top = 8.dp, end = 8.dp),
-      horizontalAlignment = Alignment.End
+        .align(Alignment.BottomCenter)
+        .fillMaxWidth()
+        .background(
+          Brush.verticalGradient(
+            colors = listOf(Color.Transparent, Color(0xEE0B1120))
+          )
+        )
+        .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-      // Real scan / Demo Mode badge
       Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-          .clip(CircleShape)
-          .background(Color(0xCC0B132B))
-          .border(1.dp, if (isDemoMode) ScanVisualSystem.LowQuality else ScanVisualSystem.Completed, CircleShape)
-          .padding(horizontal = 8.dp, vertical = 3.dp)
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Box(
-          modifier = Modifier
-            .size(7.dp)
-            .background(if (isDemoMode) ScanVisualSystem.LowQuality else ScanVisualSystem.Completed, CircleShape)
-        )
-        Spacer(modifier = Modifier.width(5.dp))
-        Text(
-          text = if (isDemoMode) "DEMO MODE" else "REAL SCAN",
-          color = Color.White,
-          fontSize = 10.sp,
-          fontWeight = FontWeight.Black
-        )
-      }
-
-      Spacer(modifier = Modifier.height(4.dp))
-
-      // Heading & Camera Reticle Badge
-      Box(
-        modifier = Modifier
-          .clip(RoundedCornerShape(6.dp))
-          .background(Color(0xCC0F172A))
-          .border(0.8.dp, SpaceCardBorder, RoundedCornerShape(6.dp))
-          .padding(horizontal = 7.dp, vertical = 3.dp)
-      ) {
-        val headingText = when ((userPose.yawDegrees / 45f).toInt() % 8) {
-          0 -> "북 (N)"
-          1 -> "북동 (NE)"
-          2 -> "동 (E)"
-          3 -> "남동 (SE)"
-          4 -> "남 (S)"
-          5 -> "남서 (SW)"
-          6 -> "서 (W)"
-          else -> "북서 (NW)"
+        // Left: Real Metrics (Point count + Plane count)
+        Column {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+              imageVector = Icons.Default.Sensors,
+              contentDescription = null,
+              tint = if (isScanning) CyanNeon else Color(0xFF94A3B8),
+              modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+              text = if (isDemoMode) "포인트: 1,420개" else "포인트: ${accumulatedPoints.size}개",
+              color = Color.White,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold
+            )
+          }
+          Spacer(modifier = Modifier.height(2.dp))
+          Text(
+            text = if (isDemoMode) "감지 평면: 8개 | 진행률: ${floor.coveragePercent}%"
+            else "감지 평면: ${detectedPlanes.size}개 | 진행률: ${sessionStats?.scanProgress ?: 0}%",
+            color = Color(0xFF94A3B8),
+            fontSize = 10.sp
+          )
         }
-        Text(
-          text = "▲ ${userPose.yawDegrees.toInt()}° $headingText",
-          color = CyanNeon,
-          fontSize = 10.sp,
-          fontWeight = FontWeight.Bold
-        )
+
+        // Right: Primary Scan Start / Stop Button
+        if (scanEngine != null && !isDemoMode) {
+          Button(
+            onClick = {
+              if (isScanning) {
+                val createdSegment = scanEngine.stopScan()
+                createdSegment?.let { onScanSegmentCreated(it) }
+              } else {
+                scanEngine.startScan(projectId = floor.id, floorId = floor.id)
+              }
+            },
+            colors = ButtonDefaults.buttonColors(
+              containerColor = if (isScanning) ScanRescanRed else CyanNeon
+            ),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.height(36.dp)
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Icon(
+                imageVector = if (isScanning) Icons.Default.Stop else Icons.Default.PlayArrow,
+                contentDescription = null,
+                tint = if (isScanning) Color.White else Color(0xFF0F172A),
+                modifier = Modifier.size(18.dp)
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text(
+                text = if (isScanning) {
+                  val sec = sessionStats?.scanDurationSec ?: 0L
+                  val mm = sec / 60
+                  val ss = sec % 60
+                  String.format("스캔 중 %02d:%02d", mm, ss)
+                } else {
+                  "스캔 시작"
+                },
+                color = if (isScanning) Color.White else Color(0xFF0F172A),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+              )
+            }
+          }
+        }
       }
     }
   }
 }
 
 /**
- * Photorealistic corridor view for Demo Camera Mode in Android Emulator
+ * Photorealistic School Corridor Demo View for Demo Mode ONLY
  */
 @Composable
 private fun DemoCorridorCameraView(
@@ -589,348 +685,102 @@ private fun DemoCorridorCameraView(
     val w = size.width
     val h = size.height
 
-    val panOffset = (yawDegrees - 90f) * 1.8f
-    val vpX = w * 0.5f + panOffset
+    val vpX = w * 0.5f + (yawDegrees - 90f) * 2.2f
     val vpY = h * 0.48f
 
-    // 1. Back Wall (End of Hallway)
-    val backWallW = w * 0.32f
-    val backWallH = h * 0.30f
-    drawRect(
+    // Ceiling gradient
+    val ceilingPath = Path().apply {
+      moveTo(0f, 0f)
+      lineTo(w, 0f)
+      lineTo(vpX + w * 0.18f, vpY * 0.42f)
+      lineTo(vpX - w * 0.18f, vpY * 0.42f)
+      close()
+    }
+    drawPath(
+      path = ceilingPath,
       brush = Brush.verticalGradient(
         colors = listOf(Color(0xFF1E293B), Color(0xFF0F172A)),
-        startY = vpY - backWallH / 2f,
-        endY = vpY + backWallH / 2f
-      ),
-      topLeft = Offset(vpX - backWallW / 2f, vpY - backWallH / 2f),
-      size = Size(backWallW, backWallH)
+        startY = 0f,
+        endY = vpY * 0.42f
+      )
     )
 
-    // End of hallway double doors
-    val doorW = backWallW * 0.42f
-    val doorH = backWallH * 0.72f
-    drawRoundRect(
-      color = Color(0xFF334155),
-      topLeft = Offset(vpX - doorW / 2f, vpY + backWallH / 2f - doorH),
-      size = Size(doorW, doorH),
-      cornerRadius = CornerRadius(2f, 2f)
-    )
-    // Emergency Exit Sign above door
-    drawRoundRect(
-      color = Color(0xFF10B981),
-      topLeft = Offset(vpX - 16f, vpY + backWallH / 2f - doorH - 12f),
-      size = Size(32f, 8f),
-      cornerRadius = CornerRadius(2f, 2f)
+    // Floor gradient
+    val floorPath = Path().apply {
+      moveTo(0f, h)
+      lineTo(w, h)
+      lineTo(vpX + w * 0.20f, vpY + (h - vpY) * 0.45f)
+      lineTo(vpX - w * 0.20f, vpY + (h - vpY) * 0.45f)
+      close()
+    }
+    drawPath(
+      path = floorPath,
+      brush = Brush.verticalGradient(
+        colors = listOf(Color(0xFF0F172A), Color(0xFF1E293B)),
+        startY = vpY,
+        endY = h
+      )
     )
 
-    // 2. Left Wall with architectural perspective (soft school interior cream/slate)
+    // Left Wall
     val leftWall = Path().apply {
       moveTo(0f, 0f)
-      lineTo(vpX - backWallW / 2f, vpY - backWallH / 2f)
-      lineTo(vpX - backWallW / 2f, vpY + backWallH / 2f)
+      lineTo(vpX - w * 0.18f, vpY * 0.42f)
+      lineTo(vpX - w * 0.20f, vpY + (h - vpY) * 0.45f)
       lineTo(0f, h)
       close()
     }
     drawPath(
       path = leftWall,
       brush = Brush.horizontalGradient(
-        colors = listOf(Color(0xFF1E293B), Color(0xFF0F172A))
+        colors = listOf(Color(0xFF1E293B), Color(0xFF0F172A)),
+        startX = 0f,
+        endX = vpX
       )
     )
 
-    // Left Wall classroom door frame (201호 / 202호)
-    val lDoorTop = vpY - backWallH * 0.2f
-    val lDoorBtm = vpY + backWallH * 0.9f
-    drawRoundRect(
-      color = Color(0xFF26334D),
-      topLeft = Offset(w * 0.08f, h * 0.25f),
-      size = Size(w * 0.16f, h * 0.55f),
-      cornerRadius = CornerRadius(4f, 4f)
-    )
-    // Door window
-    drawRoundRect(
-      color = Color(0xFF64748B).copy(alpha = 0.35f),
-      topLeft = Offset(w * 0.10f, h * 0.30f),
-      size = Size(w * 0.12f, h * 0.18f),
-      cornerRadius = CornerRadius(3f, 3f)
-    )
-
-    // 3. Right Wall with architectural perspective
+    // Right Wall
     val rightWall = Path().apply {
       moveTo(w, 0f)
-      lineTo(vpX + backWallW / 2f, vpY - backWallH / 2f)
-      lineTo(vpX + backWallW / 2f, vpY + backWallH / 2f)
+      lineTo(vpX + w * 0.18f, vpY * 0.42f)
+      lineTo(vpX + w * 0.20f, vpY + (h - vpY) * 0.45f)
       lineTo(w, h)
       close()
     }
     drawPath(
       path = rightWall,
       brush = Brush.horizontalGradient(
-        colors = listOf(Color(0xFF0F172A), Color(0xFF1E293B))
+        colors = listOf(Color(0xFF0F172A), Color(0xFF1E293B)),
+        startX = vpX,
+        endX = w
       )
     )
-
-    // Right Wall classroom door frame (203호)
-    drawRoundRect(
-      color = Color(0xFF26334D),
-      topLeft = Offset(w * 0.76f, h * 0.25f),
-      size = Size(w * 0.16f, h * 0.55f),
-      cornerRadius = CornerRadius(4f, 4f)
-    )
-    drawRoundRect(
-      color = Color(0xFF64748B).copy(alpha = 0.35f),
-      topLeft = Offset(w * 0.78f, h * 0.30f),
-      size = Size(w * 0.12f, h * 0.18f),
-      cornerRadius = CornerRadius(3f, 3f)
-    )
-
-    // 4. Ceiling with recessed linear LED lighting
-    val ceiling = Path().apply {
-      moveTo(0f, 0f)
-      lineTo(w, 0f)
-      lineTo(vpX + backWallW / 2f, vpY - backWallH / 2f)
-      lineTo(vpX - backWallW / 2f, vpY - backWallH / 2f)
-      close()
-    }
-    drawPath(
-      path = ceiling,
-      brush = Brush.verticalGradient(
-        colors = listOf(Color(0xFF0D1322), Color(0xFF192238))
-      )
-    )
-
-    // Ceiling Light panels
-    for (i in 0..2) {
-      val frac = (i + 1) * 0.28f
-      val lightY = h * 0.08f + i * 18f
-      val lightW = w * 0.24f * (1f - i * 0.2f)
-      drawRoundRect(
-        color = Color(0xFFF1F5F9).copy(alpha = 0.45f),
-        topLeft = Offset(vpX - lightW / 2f, lightY),
-        size = Size(lightW, 4f),
-        cornerRadius = CornerRadius(2f, 2f)
-      )
-    }
-
-    // 5. Polished Hallway Floor with subtle reflection lines
-    val floor = Path().apply {
-      moveTo(0f, h)
-      lineTo(w, h)
-      lineTo(vpX + backWallW / 2f, vpY + backWallH / 2f)
-      lineTo(vpX - backWallW / 2f, vpY + backWallH / 2f)
-      close()
-    }
-    drawPath(
-      path = floor,
-      brush = Brush.verticalGradient(
-        colors = listOf(Color(0xFF151E2E), Color(0xFF0B101B))
-      )
-    )
-
-    // Floor tile perspective seams
-    for (step in 1..4) {
-      val fY = (vpY + backWallH / 2f) + (h - (vpY + backWallH / 2f)) * (step / 5f)
-      drawLine(
-        color = Color(0xFF334155).copy(alpha = 0.4f),
-        start = Offset(0f, fY),
-        end = Offset(w, fY),
-        strokeWidth = 1f
-      )
-    }
   }
 }
 
-/**
- * Reticle overlay indicating active camera scan boundary
- */
-private fun DrawScope.drawScanBoundaryReticle(w: Float, h: Float, color: Color) {
-  val marginX = w * 0.14f
-  val marginY = h * 0.16f
-  val cornerLen = 22f
-
-  val l = marginX
-  val r = w - marginX
-  val t = marginY
-  val b = h - marginY
-
-  // Top-left corner
-  drawLine(color, Offset(l, t), Offset(l + cornerLen, t), strokeWidth = 2f)
-  drawLine(color, Offset(l, t), Offset(l, t + cornerLen), strokeWidth = 2f)
-
-  // Top-right corner
-  drawLine(color, Offset(r, t), Offset(r - cornerLen, t), strokeWidth = 2f)
-  drawLine(color, Offset(r, t), Offset(r, t + cornerLen), strokeWidth = 2f)
-
-  // Bottom-left corner
-  drawLine(color, Offset(l, b), Offset(l + cornerLen, b), strokeWidth = 2f)
-  drawLine(color, Offset(l, b), Offset(l, b - cornerLen), strokeWidth = 2f)
-
-  // Bottom-right corner
-  drawLine(color, Offset(r, b), Offset(r - cornerLen, b), strokeWidth = 2f)
-  drawLine(color, Offset(r, b), Offset(r, b - cornerLen), strokeWidth = 2f)
-
-  // Center crosshair
-  val cx = w / 2f
-  val cy = h / 2f
-  drawLine(color.copy(alpha = 0.6f), Offset(cx - 8f, cy), Offset(cx + 8f, cy), strokeWidth = 1.5f)
-  drawLine(color.copy(alpha = 0.6f), Offset(cx, cy - 8f), Offset(cx, cy + 8f), strokeWidth = 1.5f)
-}
-
-/**
- * AR Status badge anchored on 3D elements in camera
- */
 @Composable
-private fun StructureArBadge(
-  text: String,
-  badgeColor: Color,
-  modifier: Modifier = Modifier
-) {
+private fun RealScannerViewfinderBackground(modifier: Modifier = Modifier) {
   Box(
-    modifier = modifier
-      .clip(RoundedCornerShape(6.dp))
-      .background(Color(0xE60A0F1D))
-      .border(1.dp, badgeColor, RoundedCornerShape(6.dp))
-      .padding(horizontal = 8.dp, vertical = 4.dp)
+    modifier = modifier.background(
+      Brush.verticalGradient(
+        colors = listOf(Color(0xFF0B1120), Color(0xFF020617))
+      )
+    ),
+    contentAlignment = Alignment.Center
   ) {
-    Text(
-      text = text,
-      color = Color.White,
-      fontSize = 10.sp,
-      fontWeight = FontWeight.Bold
-    )
-  }
-}
-
-/**
- * AI Real-time Object Recognition HUD Card (Section 9)
- */
-@Composable
-private fun AiObjectRecognitionHudCard(
-  currentRoomName: String,
-  completionRate: Int,
-  recognizedObjects: String,
-  aiAnalysis: String,
-  modifier: Modifier = Modifier
-) {
-  Box(
-    modifier = modifier
-      .clip(RoundedCornerShape(10.dp))
-      .background(Color(0xCC090E1A))
-      .border(0.8.dp, CyanNeon.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
-      .padding(horizontal = 10.dp, vertical = 6.dp)
-  ) {
-    Column {
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-          imageVector = Icons.Default.AutoAwesome,
-          contentDescription = null,
-          tint = CyanNeon,
-          modifier = Modifier.size(13.dp)
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-          text = "$currentRoomName ($completionRate% 완료)",
-          color = Color.White,
-          fontSize = 11.sp,
-          fontWeight = FontWeight.Bold
-        )
-      }
-      Spacer(modifier = Modifier.height(2.dp))
-      Text(
-        text = "객체 인식: $recognizedObjects",
-        color = Color(0xFF94A3B8),
-        fontSize = 9.sp
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+      Icon(
+        imageVector = Icons.Default.Videocam,
+        contentDescription = null,
+        tint = Color(0xFF475569),
+        modifier = Modifier.size(36.dp)
       )
+      Spacer(modifier = Modifier.height(8.dp))
       Text(
-        text = "AI 분석: $aiAnalysis",
-        color = CyanNeon,
-        fontSize = 9.sp,
-        fontWeight = FontWeight.Medium
+        text = "카메라 뷰파인더 대기 중",
+        color = Color(0xFF64748B),
+        fontSize = 12.sp
       )
     }
-  }
-}
-
-/**
- * In-Camera AR Directional Guidance Banner (Section 10)
- */
-@Composable
-private fun ArDirectionalGuideBanner(
-  headingDiff: Float,
-  recommendation: AiRecommendation?,
-  modifier: Modifier = Modifier
-) {
-  val targetName = recommendation?.nextTargetName ?: "203호"
-  val distMeters = recommendation?.distanceMeters?.toInt() ?: 24
-
-  // Direction instruction based on angular difference
-  val (arrowText, actionText) = when {
-    headingDiff in -25f..25f -> Pair("▲", "앞쪽 $distMeters m 직진")
-    headingDiff < -25f -> Pair("◀", "왼쪽으로 ${(-headingDiff).toInt()}° 회전 (${distMeters}m)")
-    else -> Pair("▶", "오른쪽으로 ${headingDiff.toInt()}° 회전 (${distMeters}m)")
-  }
-
-  Box(
-    modifier = modifier
-      .clip(RoundedCornerShape(20.dp))
-      .background(Color(0xE6240046))
-      .border(1.2.dp, ScanVisualSystem.AiRecommended, RoundedCornerShape(20.dp))
-      .padding(horizontal = 14.dp, vertical = 5.dp)
-  ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      Text(
-        text = arrowText,
-        color = ScanVisualSystem.AiRecommended,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.Black
-      )
-      Spacer(modifier = Modifier.width(6.dp))
-      Text(
-        text = "$targetName AI 추천 · $actionText",
-        color = Color.White,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold
-      )
-    }
-  }
-}
-
-@Composable
-fun RealScannerViewfinderBackground(modifier: Modifier = Modifier) {
-  Canvas(modifier = modifier.fillMaxSize()) {
-    val w = size.width
-    val h = size.height
-    // High-tech dark scanner background
-    drawRect(Color(0xFF070C18))
-
-    // Tech spatial grid
-    val step = 44f
-    var x = 0f
-    while (x < w) {
-      drawLine(
-        color = Color(0xFF1E293B).copy(alpha = 0.35f),
-        start = Offset(x, 0f),
-        end = Offset(x, h),
-        strokeWidth = 1f
-      )
-      x += step
-    }
-    var y = 0f
-    while (y < h) {
-      drawLine(
-        color = Color(0xFF1E293B).copy(alpha = 0.35f),
-        start = Offset(0f, y),
-        end = Offset(w, y),
-        strokeWidth = 1f
-      )
-      y += step
-    }
-
-    // Viewfinder crosshairs
-    val cx = w / 2f
-    val cy = h / 2f
-    drawLine(CyanNeon.copy(alpha = 0.4f), Offset(cx - 24f, cy), Offset(cx + 24f, cy), 1.5f)
-    drawLine(CyanNeon.copy(alpha = 0.4f), Offset(cx, cy - 24f), Offset(cx, cy + 24f), 1.5f)
-    drawCircle(CyanNeon.copy(alpha = 0.25f), radius = 36f, center = Offset(cx, cy), style = Stroke(1.2f))
   }
 }

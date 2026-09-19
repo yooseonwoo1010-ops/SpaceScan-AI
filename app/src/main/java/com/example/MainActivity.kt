@@ -160,6 +160,10 @@ class MainActivity : ComponentActivity() {
                 project = currentProject,
                 tracker = tracker,
                 voiceAssistant = voice,
+                repository = projectRepository,
+                onProjectUpdated = { updatedProject ->
+                  currentProject = updatedProject
+                },
                 isNewlyCreated = isNewlyCreatedProject,
                 onExit = {
                   currentScreen = AppScreen.START

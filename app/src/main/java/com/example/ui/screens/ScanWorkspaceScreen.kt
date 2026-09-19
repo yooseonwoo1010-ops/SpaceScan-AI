@@ -42,6 +42,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -59,11 +60,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ar.ArCoreScanEngine
+import com.example.data.ProjectRepository
+import com.example.model.ArCoreTrackingStatus
 import com.example.model.Building
 import com.example.model.MockSchoolBuilding
 import com.example.model.Project
 import com.example.model.Room
 import com.example.model.ScanMissingArea
+import com.example.model.ScanSegment
 import com.example.sensors.PositionTracker
 import com.example.sensors.VoiceAssistant
 import com.example.ui.components.AiFeedbackBanner
@@ -101,10 +106,12 @@ fun ScanWorkspaceScreen(
   project: Project?,
   tracker: PositionTracker,
   voiceAssistant: VoiceAssistant,
+  repository: ProjectRepository? = null,
+  onProjectUpdated: (Project) -> Unit = {},
   onExit: () -> Unit,
   isNewlyCreated: Boolean = false
 ) {
-  // If project is null, display fallback message (Section 6)
+  // If project is null, display fallback message
   if (project == null) {
     Scaffold(
       containerColor = SpaceDarkBg
@@ -151,18 +158,52 @@ fun ScanWorkspaceScreen(
     return
   }
 
-  val building: Building = project.building
-    ?: com.example.data.ProjectRepository.createFreshBuilding(project.id, project.buildingName, project.floors)
+  val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val snackbarHostState = remember { SnackbarHostState() }
 
-  val isProjectDemo = project.id == "p-demo-sejong" || project.id == "project_sejong_default"
+  val isProjectDemo = project.id == "p-demo-sejong" || project.id == "project_sejong_default" || project.mode == "DEMO"
+
+  // Initialize Real ARCore Engine
+  val scanEngine = remember(project.id) {
+    ArCoreScanEngine(context, scope)
+  }
+
+  DisposableEffect(project.id) {
+    onDispose {
+      scanEngine.destroy()
+    }
+  }
+
+  val building: Building = project.building
+    ?: ProjectRepository.createFreshBuilding(project.id, project.buildingName, project.floors)
 
   LaunchedEffect(project.id) {
     tracker.resetForProject(
       isDemoMode = isProjectDemo,
       initialFloorId = building.floors.firstOrNull()?.id ?: "1F"
     )
+    if (!isProjectDemo) {
+      scanEngine.resetProjectScanData(building.floors.firstOrNull()?.id ?: "1F")
+    }
+  }
+
+  // Connect ARCore realtime pose to PositionTracker
+  LaunchedEffect(scanEngine, isProjectDemo) {
+    if (!isProjectDemo) {
+      scanEngine.sessionStats.collect { stats ->
+        val pose = stats.currentPose
+        if (pose != null) {
+          tracker.updatePoseFromArCore(
+            x = pose.x,
+            y = pose.y,
+            z = pose.z,
+            yawDeg = pose.yawDegrees,
+            isTracking = stats.trackingStatus == ArCoreTrackingStatus.TRACKING
+          )
+        }
+      }
+    }
   }
 
   val userPose by tracker.userPose.collectAsState()
@@ -171,6 +212,11 @@ fun ScanWorkspaceScreen(
   val isVoiceEnabled by voiceAssistant.isVoiceEnabled.collectAsState()
   val floorTransitionMsg by tracker.floorTransitionMessage.collectAsState()
   val relocalizationState by tracker.relocalizationState.collectAsState()
+
+  // Real scan state
+  val accumulatedPoints by scanEngine.accumulatedPoints.collectAsState()
+  val detectedPlanes by scanEngine.detectedPlanes.collectAsState()
+  val sessionStats by scanEngine.sessionStats.collectAsState()
 
   // Selected floor & 2D/3D synchronized selected room
   val initialFloorId = remember(building) {
@@ -186,7 +232,7 @@ fun ScanWorkspaceScreen(
   var showAiManagerSheet by remember { mutableStateOf(false) }
   var showNavigationOverlay by remember { mutableStateOf(false) }
   var activeMissingAreaDialog by remember { mutableStateOf<ScanMissingArea?>(null) }
-  var isCameraFeedEnabled by remember { mutableStateOf(false) }
+  var isCameraFeedEnabled by remember { mutableStateOf(true) }
 
   // Active Floor object
   val currentFloor = building.floors.find { it.id == activeFloorId }
@@ -233,6 +279,21 @@ fun ScanWorkspaceScreen(
     }
   }
 
+  // Handle Scan Segment creation
+  val handleScanSegmentCreated: (ScanSegment) -> Unit = { segment ->
+    if (repository != null) {
+      val updated = repository.addScanSegment(project.id, segment)
+      if (updated != null) {
+        onProjectUpdated(updated)
+        val msg = "스캔 세그먼트 저장 완료: 포인트 ${segment.points.size}개, 평면 ${segment.planes.size}개 (진행률: ${updated.scanProgress}%)"
+        scope.launch {
+          snackbarHostState.showSnackbar(msg)
+          voiceAssistant.speak(msg)
+        }
+      }
+    }
+  }
+
   Scaffold(
     containerColor = SpaceDarkBg,
     snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -240,7 +301,7 @@ fun ScanWorkspaceScreen(
       Column {
         TopScanBar(
           userPose = userPose,
-          overallCoverage = building.overallCoveragePercent,
+          overallCoverage = if (isDemoMode) building.overallCoveragePercent else project.scanProgress,
           isDemoMode = isDemoMode,
           projectName = project.name,
           onRelocalizeClick = {
@@ -251,7 +312,7 @@ fun ScanWorkspaceScreen(
           onCoverageDetailsClick = { showCoverageDialog = true }
         )
 
-        // Project Creation Success Banner (Section 16)
+        // Project Creation Success Banner
         AnimatedVisibility(visible = showCreationSuccessBanner) {
           Row(
             modifier = Modifier
@@ -297,7 +358,6 @@ fun ScanWorkspaceScreen(
       }
     },
     bottomBar = {
-      // Bottom Navigation matching Reference Screenshot (3D, 지도, 전체층, AI)
       NavigationBar(
         containerColor = SpaceSurfaceDark,
         tonalElevation = 0.dp,
@@ -352,13 +412,13 @@ fun ScanWorkspaceScreen(
       // Main Content Area based on selected viewMode
       when (viewMode) {
         WorkspaceViewMode.SPLIT_3D_AND_MAP -> {
-          // Mode 3: Real Camera + 3D AR Overlay + 2D Map Split Screen (45~55% Camera)
+          // Mode 3: Real Camera + 3D AR Overlay + 2D Map Split Screen
           Column(
             modifier = Modifier
               .fillMaxSize()
               .padding(horizontal = 10.dp, vertical = 6.dp)
           ) {
-            // Upper: 45~55% Real Camera + 3D AR Spatial Overlay
+            // Upper: Real Camera + 3D AR Spatial Overlay
             Box(
               modifier = Modifier
                 .weight(1.15f)
@@ -369,12 +429,14 @@ fun ScanWorkspaceScreen(
                 userPose = userPose,
                 aiRecommendation = aiRecommendation,
                 isDemoMode = isDemoMode,
+                scanEngine = if (!isDemoMode) scanEngine else null,
                 onHeadingRotated = { deltaDegrees ->
                   tracker.rotateHeading(deltaDegrees)
                 },
                 onToggleDemoMode = {
                   tracker.setDemoMode(!isDemoMode)
-                }
+                },
+                onScanSegmentCreated = handleScanSegmentCreated
               )
 
               // Floor selector floating on upper right
@@ -383,6 +445,7 @@ fun ScanWorkspaceScreen(
                 onFloorSelected = { newFloorId ->
                   activeFloorId = newFloorId
                   tracker.setFloor(newFloorId)
+                  if (!isDemoMode) scanEngine.resetProjectScanData(newFloorId)
                 },
                 modifier = Modifier
                   .align(Alignment.CenterEnd)
@@ -410,6 +473,8 @@ fun ScanWorkspaceScreen(
                     activeMissingAreaDialog = room.missingAreas.first()
                   }
                 },
+                detectedPlanes = if (!isDemoMode) detectedPlanes else emptyList(),
+                accumulatedPoints = if (!isDemoMode) accumulatedPoints else emptyList(),
                 showFullLegend = true
               )
             }
@@ -427,7 +492,7 @@ fun ScanWorkspaceScreen(
         }
 
         WorkspaceViewMode.MAP_FOCUSED -> {
-          // Mode 2: 2D Map Focused (Matches Screenshot 3)
+          // Mode 2: 2D Map Focused
           Box(
             modifier = Modifier
               .fillMaxSize()
@@ -445,6 +510,8 @@ fun ScanWorkspaceScreen(
                   activeMissingAreaDialog = room.missingAreas.first()
                 }
               },
+              detectedPlanes = if (!isDemoMode) detectedPlanes else emptyList(),
+              accumulatedPoints = if (!isDemoMode) accumulatedPoints else emptyList(),
               showFullLegend = true,
               modifier = Modifier.fillMaxSize()
             )
@@ -479,6 +546,9 @@ fun ScanWorkspaceScreen(
                   activeMissingAreaDialog = room.missingAreas.first()
                 }
               },
+              realPoints = if (!isDemoMode) accumulatedPoints else emptyList(),
+              realPlanes = if (!isDemoMode) detectedPlanes else emptyList(),
+              isDemoMode = isDemoMode,
               isCameraFeedEnabled = isCameraFeedEnabled,
               onToggleCameraFeed = { isCameraFeedEnabled = !isCameraFeedEnabled },
               modifier = Modifier.fillMaxSize()
@@ -509,7 +579,7 @@ fun ScanWorkspaceScreen(
         }
 
         WorkspaceViewMode.BUILDING_OVERVIEW -> {
-          // Mode 4: Multi-floor Stacked Overview (Matches Screenshot 4)
+          // Mode 4: Multi-floor Stacked Overview
           MultiFloorStacked3DView(
             building = building,
             currentFloorId = activeFloorId,
@@ -521,7 +591,6 @@ fun ScanWorkspaceScreen(
         }
 
         WorkspaceViewMode.AI_MANAGER -> {
-          // Keep showing split behind dialog
           MultiFloorStacked3DView(
             building = building,
             currentFloorId = activeFloorId,
@@ -534,7 +603,6 @@ fun ScanWorkspaceScreen(
       }
 
       // Demo Mode Floating Movement Controller
-      // Allows immediate evaluation of 3D/2D sync, floor change, and AI priority update
       if (isDemoMode && viewMode != WorkspaceViewMode.BUILDING_OVERVIEW) {
         Box(
           modifier = Modifier
@@ -550,69 +618,89 @@ fun ScanWorkspaceScreen(
             }
             .padding(horizontal = 14.dp, vertical = 6.dp)
         ) {
-          Row(verticalAlignment = Alignment.CenterVertically) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+          ) {
             Icon(
               imageVector = Icons.AutoMirrored.Filled.DirectionsWalk,
-              contentDescription = "이동 시뮬레이션",
+              contentDescription = null,
               tint = CyanNeon,
               modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-              text = "다음 위치로 이동 (101호→복도→계단→201호)",
+              text = "데모 이동 (탭하여 다음 지점으로)",
               color = Color.White,
-              fontSize = 11.sp,
+              fontSize = 12.sp,
               fontWeight = FontWeight.Bold
             )
           }
         }
       }
 
-      // Dialog Overlays
-      if (showCoverageDialog) {
-        CoverageDialog(
-          building = building,
-          onDismiss = { showCoverageDialog = false }
-        )
-      }
-
-      if (showAiManagerSheet) {
-        AiSurveyManagerSheet(
-          recommendation = aiRecommendation,
-          onNavigateToTarget = {
-            showAiManagerSheet = false
-            showNavigationOverlay = true
-          },
-          onDismiss = {
-            showAiManagerSheet = false
-            if (viewMode == WorkspaceViewMode.AI_MANAGER) {
-              viewMode = WorkspaceViewMode.SPLIT_3D_AND_MAP
-            }
-          }
-        )
-      }
-
-      if (showNavigationOverlay && aiRecommendation != null) {
-        NavigationOverlay(
-          floor = currentFloor,
-          userPose = userPose,
-          breadcrumbs = breadcrumbs,
-          recommendation = aiRecommendation,
-          onClose = { showNavigationOverlay = false }
-        )
-      }
-
-      activeMissingAreaDialog?.let { missingArea ->
-        MissingAreaDialog(
-          missingArea = missingArea,
-          onStartRescan = {
-            activeMissingAreaDialog = null
-            voiceAssistant.speak("${missingArea.title} 재스캔을 시작합니다. 벽면을 천천히 비추세요.", priority = true)
-          },
-          onDismiss = { activeMissingAreaDialog = null }
+      // Exit / Back Button on top left
+      IconButton(
+        onClick = onExit,
+        modifier = Modifier
+          .align(Alignment.TopStart)
+          .padding(8.dp)
+          .clip(CircleShape)
+          .background(Color(0xCC0F172A))
+          .border(0.8.dp, SpaceCardBorder, CircleShape)
+          .size(36.dp)
+      ) {
+        Icon(
+          imageVector = Icons.Default.Close,
+          contentDescription = "작업공간 나가기",
+          tint = Color.White,
+          modifier = Modifier.size(18.dp)
         )
       }
     }
+  }
+
+  // Modals & Sheets
+  if (showCoverageDialog) {
+    CoverageDialog(
+      building = building,
+      onDismiss = { showCoverageDialog = false }
+    )
+  }
+
+  if (showAiManagerSheet) {
+    AiSurveyManagerSheet(
+      recommendation = aiRecommendation,
+      onNavigateToTarget = {
+        showAiManagerSheet = false
+        showNavigationOverlay = true
+      },
+      onDismiss = {
+        showAiManagerSheet = false
+        viewMode = WorkspaceViewMode.SPLIT_3D_AND_MAP
+      }
+    )
+  }
+
+  if (showNavigationOverlay && aiRecommendation != null) {
+    NavigationOverlay(
+      floor = currentFloor,
+      userPose = userPose,
+      breadcrumbs = breadcrumbs,
+      recommendation = aiRecommendation,
+      onClose = { showNavigationOverlay = false }
+    )
+  }
+
+  activeMissingAreaDialog?.let { missingArea ->
+    MissingAreaDialog(
+      missingArea = missingArea,
+      onDismiss = { activeMissingAreaDialog = null },
+      onStartRescan = {
+        activeMissingAreaDialog = null
+        voiceAssistant.speak("${missingArea.title} 재스캔을 시작합니다. 벽면 모서리를 향해 이동하세요.")
+      }
+    )
   }
 }
 
@@ -622,5 +710,5 @@ private fun navBarColors() = NavigationBarItemDefaults.colors(
   selectedTextColor = CyanNeon,
   unselectedIconColor = Color(0xFF64748B),
   unselectedTextColor = Color(0xFF64748B),
-  indicatorColor = Color(0x3300E5FF)
+  indicatorColor = SpaceSurfaceElevated
 )

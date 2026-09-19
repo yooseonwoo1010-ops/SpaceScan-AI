@@ -129,6 +129,44 @@ class PositionTracker(context: Context, private val scope: CoroutineScope) : Sen
     _relocalizationState.value = RelocalizationState()
   }
 
+  fun updatePoseFromArCore(
+    x: Float,
+    y: Float,
+    z: Float,
+    yawDeg: Float,
+    isTracking: Boolean
+  ) {
+    if (_isDemoMode.value) return
+
+    val conf = if (isTracking) ConfidenceLevel.HIGH else ConfidenceLevel.TRACKING
+    val accuracy = if (isTracking) 0.3f else 3.0f
+
+    // Coordinate mapping: ARCore X is Right, Z is forward/back (-Z is forward), Y is Up
+    // In 2D floorplan: Map (X, -Z)
+    val mapX = x
+    val mapY = -z
+
+    _userPose.value = _userPose.value.copy(
+      x = mapX,
+      y = mapY,
+      z = y,
+      yawDegrees = yawDeg,
+      confidence = conf,
+      estimatedAccuracyMeters = accuracy,
+      timestamp = System.currentTimeMillis()
+    )
+
+    if (isTracking) {
+      val list = _breadcrumbs.value.toMutableList()
+      val last = list.lastOrNull()
+      if (last == null || kotlin.math.hypot((last.first - mapX).toDouble(), (last.second - mapY).toDouble()) > 0.15) {
+        list.add(Pair(mapX, mapY))
+        if (list.size > 200) list.removeAt(0)
+        _breadcrumbs.value = list
+      }
+    }
+  }
+
   fun setFloor(floorId: String) {
     val current = _userPose.value
     if (current.floorId != floorId) {

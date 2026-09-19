@@ -88,6 +88,9 @@ fun Spatial3DScannerView(
   userPose: UserPose,
   selectedRoom: Room?,
   onRoomClicked: (Room) -> Unit,
+  realPoints: List<com.example.model.ScanPoint> = emptyList(),
+  realPlanes: List<com.example.model.ScanPlane> = emptyList(),
+  isDemoMode: Boolean = false,
   isCameraFeedEnabled: Boolean = true,
   onToggleCameraFeed: () -> Unit = {},
   modifier: Modifier = Modifier
@@ -120,13 +123,20 @@ fun Spatial3DScannerView(
     label = "laserY"
   )
 
-  val hasScannedData = floor.rooms.isNotEmpty() || floor.coveragePercent > 0
+  val hasScannedData = isDemoMode || floor.rooms.isNotEmpty() || floor.coveragePercent > 0 || realPoints.isNotEmpty() || realPlanes.isNotEmpty()
 
-  // Generate realistic architectural 3D point cloud (only when scanned or demo data exists)
-  val pointCloud = remember(floor.id, hasScannedData) {
-    if (!hasScannedData) {
-      emptyList<CloudPoint>()
-    } else {
+  // Generate 3D point cloud from real ARCore scan or demo data
+  val pointCloud = remember(floor.id, hasScannedData, realPoints, isDemoMode) {
+    if (realPoints.isNotEmpty()) {
+      realPoints.map { pt ->
+        CloudPoint(
+          x = pt.x,
+          y = pt.y,
+          z = pt.z,
+          color = ScanCompletedGreen.copy(alpha = (pt.confidence * 0.85f).coerceIn(0.4f, 0.95f))
+        )
+      }
+    } else if (isDemoMode && hasScannedData) {
       val list = mutableListOf<CloudPoint>()
       val rng = Random(floor.id.hashCode())
 
@@ -152,6 +162,8 @@ fun Spatial3DScannerView(
         list.add(CloudPoint(x, y, z, ScanRescanRed))
       }
       list
+    } else {
+      emptyList<CloudPoint>()
     }
   }
 
