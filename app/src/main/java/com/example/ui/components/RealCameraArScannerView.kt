@@ -33,15 +33,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
@@ -51,26 +49,21 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -87,6 +80,8 @@ import com.example.model.CameraPoseData
 import com.example.model.Floor
 import com.example.model.PlaneClassification
 import com.example.model.Point3D
+import com.example.model.ScanImage
+import com.example.model.ScanMesh
 import com.example.model.ScanPlane
 import com.example.model.ScanPoint
 import com.example.model.ScanSegment
@@ -96,11 +91,8 @@ import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ScanCompletedGreen
 import com.example.ui.theme.ScanInProgressAmber
 import com.example.ui.theme.ScanRescanRed
-import com.example.ui.theme.ScanVisualSystem
 import com.example.ui.theme.SpaceCardBorder
 import com.example.ui.theme.SpaceDarkBg
-import com.example.ui.theme.SpaceSurfaceDark
-import com.example.ui.theme.SpaceSurfaceElevated
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -115,6 +107,7 @@ fun RealCameraArScannerView(
   onHeadingRotated: (Float) -> Unit,
   onToggleDemoMode: () -> Unit = {},
   onScanSegmentCreated: (ScanSegment) -> Unit = {},
+  onKeyframeCaptured: (ScanImage) -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
@@ -126,7 +119,8 @@ fun RealCameraArScannerView(
   val accumulatedPoints = scanEngine?.accumulatedPoints?.collectAsState()?.value ?: emptyList()
   val framePoints = scanEngine?.currentFramePoints?.collectAsState()?.value ?: emptyList()
   val detectedPlanes = scanEngine?.detectedPlanes?.collectAsState()?.value ?: emptyList()
-  val cameraPath = scanEngine?.cameraPath?.collectAsState()?.value ?: emptyList()
+  val accumulatedMeshes = scanEngine?.accumulatedMeshes?.collectAsState()?.value ?: emptyList()
+  val capturedImages = scanEngine?.capturedImages?.collectAsState()?.value ?: emptyList()
 
   val isScanning = sessionStats?.isScanning ?: false
   val trackingStatus = sessionStats?.trackingStatus ?: if (isDemoMode) ArCoreTrackingStatus.TRACKING else ArCoreTrackingStatus.PAUSED
@@ -137,8 +131,8 @@ fun RealCameraArScannerView(
   // Scanning laser animation
   val infiniteTransition = rememberInfiniteTransition(label = "ar_scanner")
   val laserSweep by infiniteTransition.animateFloat(
-    initialValue = 0.1f,
-    targetValue = 0.9f,
+    initialValue = 0.08f,
+    targetValue = 0.92f,
     animationSpec = infiniteRepeatable(
       animation = tween(2200, easing = LinearEasing),
       repeatMode = RepeatMode.Reverse
@@ -230,7 +224,7 @@ fun RealCameraArScannerView(
       RealScannerViewfinderBackground(modifier = Modifier.fillMaxSize())
     }
 
-    // 2. Real-time AR Point Cloud & Detected Planes Projection Layer
+    // 2. Real-time AR Point Cloud, Surface Mesh & Detected Planes Projection Layer
     Canvas(modifier = Modifier.fillMaxSize()) {
       val w = size.width
       val h = size.height
@@ -243,7 +237,7 @@ fun RealCameraArScannerView(
       )
       val camYawRad = Math.toRadians(camPose.yawDegrees.toDouble()).toFloat()
 
-      // A. Real Detected Planes Rendering (Green for floors, Blue for walls)
+      // A. Real Detected Planes & Mesh Surface Rendering
       if (!isDemoMode && detectedPlanes.isNotEmpty()) {
         for (plane in detectedPlanes) {
           if (plane.polygonPoints.size >= 3) {
@@ -372,7 +366,6 @@ fun RealCameraArScannerView(
           end = Offset(w, sweepY),
           strokeWidth = 2.5f
         )
-        // Subtle scan glow bar
         drawRect(
           brush = Brush.verticalGradient(
             colors = listOf(
@@ -403,7 +396,6 @@ fun RealCameraArScannerView(
         radius = 3.dp.toPx(),
         center = Offset(cx, cy)
       )
-      // Small cross marks
       drawLine(reticleColor, Offset(cx - 14.dp.toPx(), cy), Offset(cx - 6.dp.toPx(), cy), 1.5f)
       drawLine(reticleColor, Offset(cx + 6.dp.toPx(), cy), Offset(cx + 14.dp.toPx(), cy), 1.5f)
       drawLine(reticleColor, Offset(cx, cy - 14.dp.toPx()), Offset(cx, cy - 6.dp.toPx()), 1.5f)
@@ -423,7 +415,7 @@ fun RealCameraArScannerView(
       }
     }
 
-    // 3. Top HUD: Real Tracking Status & Sensors State
+    // 3. Top HUD: Real Tracking Status & Mode & Tags
     Row(
       modifier = Modifier
         .fillMaxWidth()
@@ -431,67 +423,107 @@ fun RealCameraArScannerView(
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      // Left: Real ARCore Tracking Status Badge
-      Surface(
-        color = Color(0xCC0B1120),
-        shape = RoundedCornerShape(20.dp),
-        border = androidx.compose.foundation.BorderStroke(
-          0.8.dp,
-          when (trackingStatus) {
-            ArCoreTrackingStatus.TRACKING -> ScanCompletedGreen.copy(alpha = 0.8f)
-            ArCoreTrackingStatus.PAUSED -> ScanInProgressAmber.copy(alpha = 0.8f)
-            else -> ScanRescanRed.copy(alpha = 0.8f)
-          }
-        )
+      // Left: Mode Badges
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-          verticalAlignment = Alignment.CenterVertically
+        Surface(
+          color = Color(0xCC0B1120),
+          shape = RoundedCornerShape(20.dp),
+          border = androidx.compose.foundation.BorderStroke(
+            0.8.dp,
+            when (trackingStatus) {
+              ArCoreTrackingStatus.TRACKING -> ScanCompletedGreen.copy(alpha = 0.8f)
+              ArCoreTrackingStatus.PAUSED -> ScanInProgressAmber.copy(alpha = 0.8f)
+              else -> ScanRescanRed.copy(alpha = 0.8f)
+            }
+          )
         ) {
-          Box(
-            modifier = Modifier
-              .size(8.dp)
-              .background(
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Box(
+              modifier = Modifier
+                .size(8.dp)
+                .background(
+                  color = when (trackingStatus) {
+                    ArCoreTrackingStatus.TRACKING -> ScanCompletedGreen
+                    ArCoreTrackingStatus.PAUSED -> ScanInProgressAmber
+                    else -> ScanRescanRed
+                  },
+                  shape = CircleShape
+                )
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = if (isDemoMode) "데모 모드 (DEMO MODE)" else trackingStatus.label,
+              color = Color.White,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold
+            )
+            if (!isDemoMode) {
+              Spacer(modifier = Modifier.width(4.dp))
+              Text(
+                text = trackingStatus.dots,
                 color = when (trackingStatus) {
                   ArCoreTrackingStatus.TRACKING -> ScanCompletedGreen
                   ArCoreTrackingStatus.PAUSED -> ScanInProgressAmber
                   else -> ScanRescanRed
                 },
-                shape = CircleShape
+                fontSize = 9.sp
               )
-          )
-          Spacer(modifier = Modifier.width(6.dp))
-          Text(
-            text = if (isDemoMode) "데모 모드 (DEMO MODE)" else trackingStatus.label,
-            color = Color.White,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
-          )
-          if (!isDemoMode) {
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-              text = trackingStatus.dots,
-              color = when (trackingStatus) {
-                ArCoreTrackingStatus.TRACKING -> ScanCompletedGreen
-                ArCoreTrackingStatus.PAUSED -> ScanInProgressAmber
-                else -> ScanRescanRed
-              },
-              fontSize = 9.sp
-            )
+            }
           }
+        }
+
+        // Tag: LIVE CAMERA
+        Surface(
+          color = if (isScanning) Color(0xCCDC2626) else Color(0xCC0369A1),
+          shape = RoundedCornerShape(12.dp)
+        ) {
+          Text(
+            text = if (isScanning) "REC LIVE" else "LIVE CAMERA",
+            color = Color.White,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+          )
         }
       }
 
-      // Right: Controls (Debug toggle & Demo/Real mode switch)
+      // Right: Controls (Shutter, Debug toggle & Demo/Real mode switch)
       Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
+        // Manual Shutter Button for Keyframe Capture
+        if (scanEngine != null && !isDemoMode) {
+          IconButton(
+            onClick = {
+              val captured = scanEngine.captureManualKeyframe()
+              captured?.let { onKeyframeCaptured(it) }
+            },
+            modifier = Modifier
+              .size(32.dp)
+              .background(Color(0xCC0B1120), CircleShape)
+              .border(1.dp, CyanNeon.copy(alpha = 0.8f), CircleShape)
+          ) {
+            Icon(
+              imageVector = Icons.Default.CameraAlt,
+              contentDescription = "스캔 이미지 수동 캡처",
+              tint = CyanNeon,
+              modifier = Modifier.size(16.dp)
+            )
+          }
+        }
+
         // Debug Panel Toggle
         IconButton(
           onClick = { showDebugPanel = !showDebugPanel },
           modifier = Modifier
-            .size(30.dp)
+            .size(32.dp)
             .background(Color(0xCC0B1120), CircleShape)
         ) {
           Icon(
@@ -513,7 +545,7 @@ fun RealCameraArScannerView(
           modifier = Modifier.clickable { onToggleDemoMode() }
         ) {
           Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
             Text(
@@ -527,56 +559,75 @@ fun RealCameraArScannerView(
       }
     }
 
-    // 4. Collapsible Real-Time Debug Info Panel
+    // 4. Collapsible Real-Time Debug Info Panel with Required Specifications
     AnimatedVisibility(
       visible = showDebugPanel,
       enter = fadeIn(),
       exit = fadeOut(),
       modifier = Modifier
         .align(Alignment.TopStart)
-        .padding(top = 44.dp, start = 10.dp)
+        .padding(top = 46.dp, start = 10.dp)
     ) {
+      val dbg = sessionStats?.debugInfo
+      val isSizeValid = dbg?.isSizeValid ?: true
+
       Surface(
         color = Color(0xEE0B1120),
         shape = RoundedCornerShape(8.dp),
-        border = androidx.compose.foundation.BorderStroke(0.8.dp, CyanNeon.copy(alpha = 0.5f))
+        border = androidx.compose.foundation.BorderStroke(
+          0.8.dp,
+          if (isSizeValid) CyanNeon.copy(alpha = 0.5f) else ScanRescanRed
+        )
       ) {
         Column(modifier = Modifier.padding(8.dp)) {
           Text(
-            text = "ARCore Spatial Telemetry",
-            color = CyanNeon,
+            text = "Camera & Viewport Telemetry",
+            color = if (isSizeValid) CyanNeon else ScanRescanRed,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold
           )
           Spacer(modifier = Modifier.height(3.dp))
           Text(
-            text = "FPS: ${sessionStats?.fps ?: 30} | Depth: ${if (hardwareStatus?.depthSupported == true) "ON" else "OFF"}",
+            text = "Preview size: ${dbg?.previewWidth ?: 1080} x ${dbg?.previewHeight ?: 1920}",
+            color = if (isSizeValid) Color(0xFFCBD5E1) else ScanRescanRed,
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = if (!isSizeValid) FontWeight.Bold else FontWeight.Normal
+          )
+          Text(
+            text = "Camera resolution: ${dbg?.cameraResWidth ?: 1920} x ${dbg?.cameraResHeight ?: 1080}",
             color = Color(0xFFCBD5E1),
             fontSize = 9.sp,
             fontFamily = FontFamily.Monospace
           )
           Text(
-            text = "Points: ${accumulatedPoints.size} (Frame: ${framePoints.size})",
+            text = "Rotation: ${dbg?.displayRotation ?: 0} | Scale: ${dbg?.scaleType ?: "FILL"}",
             color = Color(0xFFCBD5E1),
             fontSize = 9.sp,
             fontFamily = FontFamily.Monospace
           )
           Text(
-            text = "Planes: ${detectedPlanes.size} | Segments: ${sessionStats?.segmentsCount ?: 0}",
-            color = Color(0xFFCBD5E1),
-            fontSize = 9.sp,
-            fontFamily = FontFamily.Monospace
-          )
-          val pose = sessionStats?.currentPose
-          Text(
-            text = "Pose: X=${String.format("%.2f", pose?.x ?: 0f)} Y=${String.format("%.2f", pose?.y ?: 0f)} Z=${String.format("%.2f", pose?.z ?: 0f)}",
+            text = "Viewport: ${dbg?.viewportStatus ?: "정상"} | Camera: ${dbg?.cameraFacing ?: "BACK"}",
             color = Color(0xFFCBD5E1),
             fontSize = 9.sp,
             fontFamily = FontFamily.Monospace
           )
           Text(
-            text = "Heading: ${String.format("%.1f", userPose.yawDegrees)}° | Progress: ${sessionStats?.scanProgress ?: 0}%",
+            text = "Preview: ${dbg?.previewState ?: "ACTIVE"} | FPS: ${sessionStats?.fps ?: 30}",
             color = Color(0xFFCBD5E1),
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+          )
+          Spacer(modifier = Modifier.height(3.dp))
+          Text(
+            text = "3D Points: ${accumulatedPoints.size} | Meshes: ${accumulatedMeshes.size} (${sessionStats?.totalMeshVertices ?: 0}v)",
+            color = CyanNeon,
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+          )
+          Text(
+            text = "Planes: ${detectedPlanes.size} | Keyframe Images: ${capturedImages.size}",
+            color = CyanNeon,
             fontSize = 9.sp,
             fontFamily = FontFamily.Monospace
           )
@@ -601,7 +652,7 @@ fun RealCameraArScannerView(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        // Left: Real Metrics (Point count + Plane count)
+        // Left: Real Metrics (Point count + Mesh count + Images)
         Column {
           Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -612,7 +663,7 @@ fun RealCameraArScannerView(
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-              text = if (isDemoMode) "포인트: 1,420개" else "포인트: ${accumulatedPoints.size}개",
+              text = if (isDemoMode) "포인트: 1,420개" else "3D 포인트: ${accumulatedPoints.size}개",
               color = Color.White,
               fontSize = 11.sp,
               fontWeight = FontWeight.Bold
@@ -620,8 +671,8 @@ fun RealCameraArScannerView(
           }
           Spacer(modifier = Modifier.height(2.dp))
           Text(
-            text = if (isDemoMode) "감지 평면: 8개 | 진행률: ${floor.coveragePercent}%"
-            else "감지 평면: ${detectedPlanes.size}개 | 진행률: ${sessionStats?.scanProgress ?: 0}%",
+            text = if (isDemoMode) "메쉬: 12개 | 이미지: 4장 | 진행률: ${floor.coveragePercent}%"
+            else "메쉬: ${accumulatedMeshes.size}개 | 이미지: ${capturedImages.size}장 | 진행률: ${sessionStats?.scanProgress ?: 0}%",
             color = Color(0xFF94A3B8),
             fontSize = 10.sp
           )

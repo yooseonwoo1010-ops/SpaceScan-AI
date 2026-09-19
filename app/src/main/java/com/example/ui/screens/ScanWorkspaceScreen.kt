@@ -1,14 +1,14 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,13 +17,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.SmartToy
@@ -32,6 +35,7 @@ import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
@@ -40,13 +44,14 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -54,8 +59,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -67,6 +73,7 @@ import com.example.model.Building
 import com.example.model.MockSchoolBuilding
 import com.example.model.Project
 import com.example.model.Room
+import com.example.model.ScanImage
 import com.example.model.ScanMissingArea
 import com.example.model.ScanSegment
 import com.example.sensors.PositionTracker
@@ -80,12 +87,12 @@ import com.example.ui.components.MissingAreaDialog
 import com.example.ui.components.MultiFloorStacked3DView
 import com.example.ui.components.NavigationOverlay
 import com.example.ui.components.RealCameraArScannerView
+import com.example.ui.components.ScanImageDetailSheet
 import com.example.ui.components.Spatial3DScannerView
 import com.example.ui.components.TopScanBar
 import com.example.ui.theme.CyanNeon
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ScanCompletedGreen
-import com.example.ui.theme.ScanInProgressAmber
 import com.example.ui.theme.ScanRescanRed
 import com.example.ui.theme.SpaceCardBorder
 import com.example.ui.theme.SpaceDarkBg
@@ -94,13 +101,14 @@ import com.example.ui.theme.SpaceSurfaceElevated
 import kotlinx.coroutines.launch
 
 enum class WorkspaceViewMode {
-  SPLIT_3D_AND_MAP, // Mode 3: Top 3D + Middle 2D Map
-  MAP_FOCUSED,       // Mode 2: 2D Indoor Map Focused
-  THREE_D_FOCUSED,   // Mode 1: 3D Scanner Focused
-  BUILDING_OVERVIEW, // Mode 4: Multi-floor Stacked Overview
-  AI_MANAGER         // Mode 5: AI Survey Manager
+  SPLIT_3D_AND_MAP, // Mode: 45% Camera/AR + 30% 2D Map + 15% AI/Images
+  MAP_FOCUSED,       // Mode: Full 2D Indoor Map Focused
+  THREE_D_FOCUSED,   // Mode: Full 3D Reconstructed Mesh/Point Viewer
+  BUILDING_OVERVIEW, // Mode: Multi-floor Stacked Overview
+  AI_MANAGER         // Mode: AI Survey Manager
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScanWorkspaceScreen(
   project: Project?,
@@ -111,7 +119,6 @@ fun ScanWorkspaceScreen(
   onExit: () -> Unit,
   isNewlyCreated: Boolean = false
 ) {
-  // If project is null, display fallback message
   if (project == null) {
     Scaffold(
       containerColor = SpaceDarkBg
@@ -213,17 +220,20 @@ fun ScanWorkspaceScreen(
   val floorTransitionMsg by tracker.floorTransitionMessage.collectAsState()
   val relocalizationState by tracker.relocalizationState.collectAsState()
 
-  // Real scan state
+  // Real scan state from ARCoreScanEngine
   val accumulatedPoints by scanEngine.accumulatedPoints.collectAsState()
   val detectedPlanes by scanEngine.detectedPlanes.collectAsState()
+  val accumulatedMeshes by scanEngine.accumulatedMeshes.collectAsState()
+  val capturedImages by scanEngine.capturedImages.collectAsState()
   val sessionStats by scanEngine.sessionStats.collectAsState()
 
-  // Selected floor & 2D/3D synchronized selected room
+  // Selected floor & 2D/3D synchronized selected room & selected image
   val initialFloorId = remember(building) {
     building.floors.firstOrNull()?.id ?: "1F"
   }
   var activeFloorId by remember { mutableStateOf(userPose.floorId.ifEmpty { initialFloorId }) }
   var selectedRoom by remember { mutableStateOf<Room?>(null) }
+  var selectedImageForDetail by remember { mutableStateOf<ScanImage?>(null) }
   var viewMode by remember { mutableStateOf(WorkspaceViewMode.SPLIT_3D_AND_MAP) }
   var showCreationSuccessBanner by remember { mutableStateOf(isNewlyCreated) }
 
@@ -232,7 +242,8 @@ fun ScanWorkspaceScreen(
   var showAiManagerSheet by remember { mutableStateOf(false) }
   var showNavigationOverlay by remember { mutableStateOf(false) }
   var activeMissingAreaDialog by remember { mutableStateOf<ScanMissingArea?>(null) }
-  var isCameraFeedEnabled by remember { mutableStateOf(true) }
+
+  val imageDetailSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
   // Active Floor object
   val currentFloor = building.floors.find { it.id == activeFloorId }
@@ -251,7 +262,7 @@ fun ScanWorkspaceScreen(
       totalRoomsCount = 0
     )
 
-  // Real-time AI Recommendation calculation (only available if demo or rooms exist)
+  // Real-time AI Recommendation calculation
   val aiRecommendation = remember(userPose, activeFloorId, building, isProjectDemo) {
     if (isProjectDemo || building.floors.any { it.rooms.isNotEmpty() }) {
       MockSchoolBuilding.calculateRecommendation(userPose, building)
@@ -279,18 +290,26 @@ fun ScanWorkspaceScreen(
     }
   }
 
-  // Handle Scan Segment creation
+  // Handle Scan Segment creation & Project auto-sync
   val handleScanSegmentCreated: (ScanSegment) -> Unit = { segment ->
     if (repository != null) {
       val updated = repository.addScanSegment(project.id, segment)
       if (updated != null) {
         onProjectUpdated(updated)
-        val msg = "스캔 세그먼트 저장 완료: 포인트 ${segment.points.size}개, 평면 ${segment.planes.size}개 (진행률: ${updated.scanProgress}%)"
+        val msg = "스캔 저장 완료: 포인트 ${segment.points.size}개, 메쉬 ${segment.planes.size}개 (진행률: ${updated.scanProgress}%)"
         scope.launch {
           snackbarHostState.showSnackbar(msg)
           voiceAssistant.speak(msg)
         }
       }
+    }
+  }
+
+  val handleKeyframeCaptured: (ScanImage) -> Unit = { image ->
+    scope.launch {
+      val msg = "📷 스캔 키프레임 캡처 완료 (${String.format("%.1f", image.mapX)}m, ${String.format("%.1f", image.mapY)}m)"
+      snackbarHostState.showSnackbar(msg)
+      voiceAssistant.speak("키프레임 사진이 캡처되었습니다.")
     }
   }
 
@@ -366,7 +385,7 @@ fun ScanWorkspaceScreen(
         NavigationBarItem(
           selected = viewMode == WorkspaceViewMode.SPLIT_3D_AND_MAP,
           onClick = { viewMode = WorkspaceViewMode.SPLIT_3D_AND_MAP },
-          icon = { Icon(Icons.Default.VerticalSplit, contentDescription = "3D+지도") },
+          icon = { Icon(Icons.Default.VerticalSplit, contentDescription = "분할뷰") },
           label = { Text("분할뷰") },
           colors = navBarColors()
         )
@@ -374,14 +393,14 @@ fun ScanWorkspaceScreen(
           selected = viewMode == WorkspaceViewMode.THREE_D_FOCUSED,
           onClick = { viewMode = WorkspaceViewMode.THREE_D_FOCUSED },
           icon = { Icon(Icons.Default.ViewInAr, contentDescription = "3D") },
-          label = { Text("3D") },
+          label = { Text("3D 뷰어") },
           colors = navBarColors()
         )
         NavigationBarItem(
           selected = viewMode == WorkspaceViewMode.MAP_FOCUSED,
           onClick = { viewMode = WorkspaceViewMode.MAP_FOCUSED },
           icon = { Icon(Icons.Default.Map, contentDescription = "지도") },
-          label = { Text("지도") },
+          label = { Text("2D 지도") },
           colors = navBarColors()
         )
         NavigationBarItem(
@@ -409,19 +428,18 @@ fun ScanWorkspaceScreen(
         .fillMaxSize()
         .padding(innerPadding)
     ) {
-      // Main Content Area based on selected viewMode
       when (viewMode) {
         WorkspaceViewMode.SPLIT_3D_AND_MAP -> {
-          // Mode 3: Real Camera + 3D AR Overlay + 2D Map Split Screen
+          // Layout Allocation: Camera (45-48%), Map (28-30%), AI & Images (18-20%)
           Column(
             modifier = Modifier
               .fillMaxSize()
-              .padding(horizontal = 10.dp, vertical = 6.dp)
+              .padding(horizontal = 8.dp, vertical = 4.dp)
           ) {
-            // Upper: Real Camera + 3D AR Spatial Overlay
+            // 1. Camera Preview & AR Projection Layer (46% Screen Height)
             Box(
               modifier = Modifier
-                .weight(1.15f)
+                .weight(1.35f)
                 .fillMaxWidth()
             ) {
               RealCameraArScannerView(
@@ -436,10 +454,10 @@ fun ScanWorkspaceScreen(
                 onToggleDemoMode = {
                   tracker.setDemoMode(!isDemoMode)
                 },
-                onScanSegmentCreated = handleScanSegmentCreated
+                onScanSegmentCreated = handleScanSegmentCreated,
+                onKeyframeCaptured = handleKeyframeCaptured
               )
 
-              // Floor selector floating on upper right
               FloorSelector(
                 selectedFloorId = activeFloorId,
                 onFloorSelected = { newFloorId ->
@@ -449,16 +467,16 @@ fun ScanWorkspaceScreen(
                 },
                 modifier = Modifier
                   .align(Alignment.CenterEnd)
-                  .padding(end = 6.dp)
+                  .padding(end = 4.dp)
               )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
-            // Middle: 2D Indoor Map View
+            // 2. 2D Map with 800% Zoom and Camera Keyframe 📷 Pins (28% Screen Height)
             Box(
               modifier = Modifier
-                .weight(1.1f)
+                .weight(1.0f)
                 .fillMaxWidth()
             ) {
               Indoor2DMapView(
@@ -475,13 +493,83 @@ fun ScanWorkspaceScreen(
                 },
                 detectedPlanes = if (!isDemoMode) detectedPlanes else emptyList(),
                 accumulatedPoints = if (!isDemoMode) accumulatedPoints else emptyList(),
-                showFullLegend = true
+                capturedImages = if (!isDemoMode) capturedImages else emptyList(),
+                selectedImageId = selectedImageForDetail?.id,
+                onImageSelected = { img ->
+                  selectedImageForDetail = img
+                },
+                showFullLegend = false
               )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
-            // Lower: AI Feedback Banner
+            // 3. Captured Keyframe Images Carousel (Horizontal Strip)
+            if (capturedImages.isNotEmpty() && !isDemoMode) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Collections,
+                  contentDescription = null,
+                  tint = CyanNeon,
+                  modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                  text = "스캔 이미지 (${capturedImages.size}장)",
+                  color = Color.White,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Bold
+                )
+              }
+
+              LazyRow(
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                items(capturedImages) { img ->
+                  Box(
+                    modifier = Modifier
+                      .size(width = 64.dp, height = 48.dp)
+                      .clip(RoundedCornerShape(6.dp))
+                      .background(Color(0xFF0F172A))
+                      .border(
+                        1.dp,
+                        if (img.id == selectedImageForDetail?.id) CyanNeon else SpaceCardBorder,
+                        RoundedCornerShape(6.dp)
+                      )
+                      .clickable { selectedImageForDetail = img }
+                  ) {
+                    if (img.thumbnailBitmap != null) {
+                      Image(
+                        bitmap = img.thumbnailBitmap.asImageBitmap(),
+                        contentDescription = "썸네일",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                      )
+                    } else {
+                      Icon(
+                        imageVector = Icons.Default.CameraAlt,
+                        contentDescription = null,
+                        tint = Color(0xFF64748B),
+                        modifier = Modifier
+                          .size(20.dp)
+                          .align(Alignment.Center)
+                      )
+                    }
+                  }
+                }
+              }
+
+              Spacer(modifier = Modifier.height(4.dp))
+            }
+
+            // 4. AI Feedback Banner
             AiFeedbackBanner(
               recommendation = aiRecommendation,
               isVoiceEnabled = isVoiceEnabled,
@@ -492,11 +580,11 @@ fun ScanWorkspaceScreen(
         }
 
         WorkspaceViewMode.MAP_FOCUSED -> {
-          // Mode 2: 2D Map Focused
+          // Full 2D Map Focused
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .padding(10.dp)
+              .padding(8.dp)
           ) {
             Indoor2DMapView(
               floor = currentFloor,
@@ -512,6 +600,11 @@ fun ScanWorkspaceScreen(
               },
               detectedPlanes = if (!isDemoMode) detectedPlanes else emptyList(),
               accumulatedPoints = if (!isDemoMode) accumulatedPoints else emptyList(),
+              capturedImages = if (!isDemoMode) capturedImages else emptyList(),
+              selectedImageId = selectedImageForDetail?.id,
+              onImageSelected = { img ->
+                selectedImageForDetail = img
+              },
               showFullLegend = true,
               modifier = Modifier.fillMaxSize()
             )
@@ -524,17 +617,17 @@ fun ScanWorkspaceScreen(
               },
               modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = 6.dp)
+                .padding(end = 4.dp)
             )
           }
         }
 
         WorkspaceViewMode.THREE_D_FOCUSED -> {
-          // Mode 1: 3D Scanner Focused
+          // Full 3D Reconstructed Mesh / Point Cloud Viewer
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .padding(10.dp)
+              .padding(8.dp)
           ) {
             Spatial3DScannerView(
               floor = currentFloor,
@@ -548,9 +641,13 @@ fun ScanWorkspaceScreen(
               },
               realPoints = if (!isDemoMode) accumulatedPoints else emptyList(),
               realPlanes = if (!isDemoMode) detectedPlanes else emptyList(),
+              realMeshes = if (!isDemoMode) accumulatedMeshes else emptyList(),
+              capturedImages = if (!isDemoMode) capturedImages else emptyList(),
+              selectedImageId = selectedImageForDetail?.id,
+              onImageClicked = { img ->
+                selectedImageForDetail = img
+              },
               isDemoMode = isDemoMode,
-              isCameraFeedEnabled = isCameraFeedEnabled,
-              onToggleCameraFeed = { isCameraFeedEnabled = !isCameraFeedEnabled },
               modifier = Modifier.fillMaxSize()
             )
 
@@ -562,10 +659,10 @@ fun ScanWorkspaceScreen(
               },
               modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = 6.dp)
+                .padding(end = 4.dp)
             )
 
-            // Bottom overlay AI pill
+            // Bottom AI Recommendation Pill
             AiFeedbackBanner(
               recommendation = aiRecommendation,
               isVoiceEnabled = isVoiceEnabled,
@@ -579,7 +676,6 @@ fun ScanWorkspaceScreen(
         }
 
         WorkspaceViewMode.BUILDING_OVERVIEW -> {
-          // Mode 4: Multi-floor Stacked Overview
           MultiFloorStacked3DView(
             building = building,
             currentFloorId = activeFloorId,
@@ -699,6 +795,23 @@ fun ScanWorkspaceScreen(
       onStartRescan = {
         activeMissingAreaDialog = null
         voiceAssistant.speak("${missingArea.title} 재스캔을 시작합니다. 벽면 모서리를 향해 이동하세요.")
+      }
+    )
+  }
+
+  // Scan Image Detail Sheet
+  selectedImageForDetail?.let { img ->
+    ScanImageDetailSheet(
+      scanImage = img,
+      sheetState = imageDetailSheetState,
+      onDismiss = { selectedImageForDetail = null },
+      onViewIn3D = { targetImage ->
+        selectedImageForDetail = null
+        viewMode = WorkspaceViewMode.THREE_D_FOCUSED
+      },
+      onViewOnMap = { targetImage ->
+        selectedImageForDetail = null
+        viewMode = WorkspaceViewMode.MAP_FOCUSED
       }
     )
   }

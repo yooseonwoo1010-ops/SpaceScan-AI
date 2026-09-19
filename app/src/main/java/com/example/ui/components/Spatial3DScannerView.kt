@@ -1,9 +1,5 @@
 package com.example.ui.components
 
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -14,6 +10,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,13 +28,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -46,28 +47,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import com.example.model.Floor
+import com.example.model.PlaneClassification
 import com.example.model.Point3D
 import com.example.model.Room
+import com.example.model.ScanImage
+import com.example.model.ScanMesh
+import com.example.model.ScanPlane
+import com.example.model.ScanPoint
 import com.example.model.UserPose
 import com.example.ui.theme.CyanNeon
 import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ScanCompletedGreen
+import com.example.ui.theme.ScanInProgressAmber
 import com.example.ui.theme.ScanRescanRed
 import com.example.ui.theme.SpaceCardBorder
 import com.example.ui.theme.SpaceDarkBg
@@ -82,32 +83,50 @@ data class CloudPoint(
   val color: Color
 )
 
+enum class View3DMode(val label: String) {
+  ORBIT("자유 궤도"),
+  FIRST_PERSON("1인칭 시점"),
+  TOP_DOWN("조감도 (TOP)")
+}
+
 @Composable
 fun Spatial3DScannerView(
   floor: Floor,
   userPose: UserPose,
   selectedRoom: Room?,
   onRoomClicked: (Room) -> Unit,
-  realPoints: List<com.example.model.ScanPoint> = emptyList(),
-  realPlanes: List<com.example.model.ScanPlane> = emptyList(),
+  realPoints: List<ScanPoint> = emptyList(),
+  realPlanes: List<ScanPlane> = emptyList(),
+  realMeshes: List<ScanMesh> = emptyList(),
+  capturedImages: List<ScanImage> = emptyList(),
+  selectedImageId: String? = null,
+  onImageClicked: (ScanImage) -> Unit = {},
   isDemoMode: Boolean = false,
-  isCameraFeedEnabled: Boolean = true,
-  onToggleCameraFeed: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
-  val context = LocalContext.current
-  val lifecycleOwner = LocalLifecycleOwner.current
-
-  // 3D camera rotation and pitch angles
+  // 3D camera rotation, pitch, and zoom
   var yawAngle by remember { mutableFloatStateOf(45f) }
-  var pitchAngle by remember { mutableFloatStateOf(28f) }
-  var zoomScale by remember { mutableFloatStateOf(1f) }
+  var pitchAngle by remember { mutableFloatStateOf(32f) }
+  var zoomScale by remember { mutableFloatStateOf(1.0f) }
+  var panOffset by remember { mutableStateOf(Offset.Zero) }
+  var viewMode by remember { mutableStateOf(View3DMode.ORBIT) }
 
   // If a room is selected, focus 3D view towards it
   LaunchedEffect(selectedRoom) {
     if (selectedRoom != null) {
-      yawAngle = 60f
+      yawAngle = 55f
       pitchAngle = 35f
+      zoomScale = 1.25f
+    }
+  }
+
+  // Update angles when 1st person mode
+  LaunchedEffect(viewMode, userPose) {
+    if (viewMode == View3DMode.FIRST_PERSON) {
+      yawAngle = userPose.yawDegrees
+      pitchAngle = 10f
+    } else if (viewMode == View3DMode.TOP_DOWN) {
+      pitchAngle = 85f
     }
   }
 
@@ -123,7 +142,7 @@ fun Spatial3DScannerView(
     label = "laserY"
   )
 
-  val hasScannedData = isDemoMode || floor.rooms.isNotEmpty() || floor.coveragePercent > 0 || realPoints.isNotEmpty() || realPlanes.isNotEmpty()
+  val hasScannedData = isDemoMode || floor.rooms.isNotEmpty() || floor.coveragePercent > 0 || realPoints.isNotEmpty() || realPlanes.isNotEmpty() || realMeshes.isNotEmpty()
 
   // Generate 3D point cloud from real ARCore scan or demo data
   val pointCloud = remember(floor.id, hasScannedData, realPoints, isDemoMode) {
@@ -140,30 +159,21 @@ fun Spatial3DScannerView(
       val list = mutableListOf<CloudPoint>()
       val rng = Random(floor.id.hashCode())
 
-      // Corridor and Room wall & floor points
-      for (i in 0..300) {
-        val x = rng.nextFloat() * 40f - 20f
-        val y = rng.nextFloat() * 4f - 2f // height
-        val z = rng.nextFloat() * 30f - 15f
+      for (i in 0..450) {
+        val x = rng.nextFloat() * 36f - 18f
+        val y = rng.nextFloat() * 3.6f - 1.8f
+        val z = rng.nextFloat() * 26f - 13f
         val c = when (rng.nextInt(4)) {
-          0 -> CyanNeon.copy(alpha = 0.8f)
-          1 -> ElectricBlue.copy(alpha = 0.7f)
-          2 -> ScanCompletedGreen.copy(alpha = 0.8f)
+          0 -> CyanNeon.copy(alpha = 0.85f)
+          1 -> ElectricBlue.copy(alpha = 0.75f)
+          2 -> ScanCompletedGreen.copy(alpha = 0.85f)
           else -> Color(0xFF90E0EF)
         }
         list.add(CloudPoint(x, y, z, c))
       }
-
-      // Add Red alert warning point cloud for low quality area
-      for (i in 0..60) {
-        val x = rng.nextFloat() * 8f - 14f
-        val y = rng.nextFloat() * 3f
-        val z = rng.nextFloat() * 2f + 8f
-        list.add(CloudPoint(x, y, z, ScanRescanRed))
-      }
       list
     } else {
-      emptyList<CloudPoint>()
+      emptyList()
     }
   }
 
@@ -176,54 +186,19 @@ fun Spatial3DScannerView(
       .pointerInput(Unit) {
         detectDragGestures { change, dragAmount ->
           change.consume()
-          yawAngle = (yawAngle + dragAmount.x * 0.35f) % 360f
-          pitchAngle = (pitchAngle - dragAmount.y * 0.25f).coerceIn(10f, 80f)
+          if (viewMode != View3DMode.TOP_DOWN) {
+            yawAngle = (yawAngle + dragAmount.x * 0.35f) % 360f
+            pitchAngle = (pitchAngle - dragAmount.y * 0.25f).coerceIn(5f, 88f)
+          } else {
+            panOffset += dragAmount
+          }
         }
       }
   ) {
-    // 1. CameraX Feed (when available and enabled) or High-Tech Spatial Grid
-    if (isCameraFeedEnabled) {
-      AndroidView(
-        factory = { ctx ->
-          val previewView = PreviewView(ctx).apply {
-            scaleType = PreviewView.ScaleType.FILL_CENTER
-          }
-          try {
-            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-            cameraProviderFuture.addListener({
-              try {
-                val cameraProvider = cameraProviderFuture.get()
-                val preview = Preview.Builder().build().also {
-                  it.surfaceProvider = previewView.surfaceProvider
-                }
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                  lifecycleOwner,
-                  CameraSelector.DEFAULT_BACK_CAMERA,
-                  preview
-                )
-              } catch (_: Exception) {
-                // In emulators without camera hardware, fallback handled seamlessly
-              }
-            }, ContextCompat.getMainExecutor(ctx))
-          } catch (_: Exception) {}
-          previewView
-        },
-        modifier = Modifier.fillMaxSize()
-      )
-
-      // Dark sci-fi tinted overlay for readable point cloud
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(Color(0xB3060C18))
-      )
-    }
-
-    // 2. 3D Spatial Canvas (Point Cloud + Room Wireframes + LiDAR Beam + User Pose)
+    // 3D Spatial Canvas (Point Cloud + Reconstructed Meshes + Room Wireframes + LiDAR Beam + User Pose + 📷 Image Pins)
     Canvas(modifier = Modifier.fillMaxSize()) {
-      val cx = size.width / 2f
-      val cy = size.height / 2f
+      val cx = size.width / 2f + panOffset.x
+      val cy = size.height / 2f + panOffset.y
       val yawRad = Math.toRadians(yawAngle.toDouble()).toFloat()
       val pitchRad = Math.toRadians(pitchAngle.toDouble()).toFloat()
 
@@ -236,36 +211,75 @@ fun Spatial3DScannerView(
         val y2 = y * cos(pitchRad) - z1 * sin(pitchRad)
         val z2 = y * sin(pitchRad) + z1 * cos(pitchRad)
 
-        val depthScale = 14f * zoomScale
+        val depthScale = 16f * zoomScale
         val screenX = cx + x1 * depthScale
         val screenY = cy - y2 * depthScale
         return Offset(screenX, screenY)
       }
 
-      // Draw Floor Ground Plane Mesh
+      // Draw Floor Ground Plane Grid Mesh
       val gridStep = 4f
-      for (gx in -20..20 step 4) {
-        val p1 = project3Dto2D(gx.toFloat(), -2f, -16f)
-        val p2 = project3Dto2D(gx.toFloat(), -2f, 16f)
+      for (gx in -24..24 step 4) {
+        val p1 = project3Dto2D(gx.toFloat(), -1.8f, -18f)
+        val p2 = project3Dto2D(gx.toFloat(), -1.8f, 18f)
         drawLine(
-          color = Color(0xFF1B2A4A).copy(alpha = 0.5f),
+          color = Color(0xFF1B2A4A).copy(alpha = 0.45f),
           start = p1,
           end = p2,
           strokeWidth = 1f
         )
       }
-      for (gz in -16..16 step 4) {
-        val p1 = project3Dto2D(-20f, -2f, gz.toFloat())
-        val p2 = project3Dto2D(20f, -2f, gz.toFloat())
+      for (gz in -18..18 step 4) {
+        val p1 = project3Dto2D(-24f, -1.8f, gz.toFloat())
+        val p2 = project3Dto2D(24f, -1.8f, gz.toFloat())
         drawLine(
-          color = Color(0xFF1B2A4A).copy(alpha = 0.5f),
+          color = Color(0xFF1B2A4A).copy(alpha = 0.45f),
           start = p1,
           end = p2,
           strokeWidth = 1f
         )
       }
 
-      // Draw Room 3D Bounding Boxes
+      // 1. Draw Real ARCore 3D Surface Meshes (Reconstructed Triangles)
+      if (realMeshes.isNotEmpty()) {
+        for (mesh in realMeshes) {
+          val meshColor = when (mesh.classification) {
+            PlaneClassification.FLOOR -> ScanCompletedGreen
+            PlaneClassification.WALL -> ElectricBlue
+            PlaneClassification.CEILING -> CyanNeon
+            else -> Color(0xFF94A3B8)
+          }
+
+          val vertices = mesh.vertices
+          val triangles = mesh.triangles
+          val projectedVerts = vertices.map { project3Dto2D(it.x, it.y, it.z) }
+
+          // Draw Mesh Triangles
+          for (tri in triangles) {
+            val idx1 = tri.v1
+            val idx2 = tri.v2
+            val idx3 = tri.v3
+
+            if (idx1 in projectedVerts.indices && idx2 in projectedVerts.indices && idx3 in projectedVerts.indices) {
+              val p1 = projectedVerts[idx1]
+              val p2 = projectedVerts[idx2]
+              val p3 = projectedVerts[idx3]
+
+              val triPath = Path().apply {
+                moveTo(p1.x, p1.y)
+                lineTo(p2.x, p2.y)
+                lineTo(p3.x, p3.y)
+                close()
+              }
+
+              drawPath(path = triPath, color = meshColor.copy(alpha = 0.22f))
+              drawPath(path = triPath, color = meshColor.copy(alpha = 0.65f), style = Stroke(width = 1.0f))
+            }
+          }
+        }
+      }
+
+      // 2. Draw Room 3D Bounding Boxes & Architectural Volumes
       floor.rooms.forEach { room ->
         val isTarget = room.id == selectedRoom?.id
         val rx = (room.x - 28f) * 0.7f
@@ -274,10 +288,10 @@ fun Spatial3DScannerView(
         val rh = (room.height / 2f) * 0.7f
         val wallHeight = 2.4f
 
-        val c1 = project3Dto2D(rx - rw, -2f, rz - rh)
-        val c2 = project3Dto2D(rx + rw, -2f, rz - rh)
-        val c3 = project3Dto2D(rx + rw, -2f, rz + rh)
-        val c4 = project3Dto2D(rx - rw, -2f, rz + rh)
+        val c1 = project3Dto2D(rx - rw, -1.8f, rz - rh)
+        val c2 = project3Dto2D(rx + rw, -1.8f, rz - rh)
+        val c3 = project3Dto2D(rx + rw, -1.8f, rz + rh)
+        val c4 = project3Dto2D(rx - rw, -1.8f, rz + rh)
 
         val t1 = project3Dto2D(rx - rw, wallHeight, rz - rh)
         val t2 = project3Dto2D(rx + rw, wallHeight, rz - rh)
@@ -287,83 +301,111 @@ fun Spatial3DScannerView(
         val boxColor = when {
           isTarget -> CyanNeon
           room.status == com.example.model.ScanStatus.RESCAN_NEEDED -> ScanRescanRed
-          room.status == com.example.model.ScanStatus.COMPLETED -> ScanCompletedGreen.copy(alpha = 0.6f)
-          else -> ElectricBlue.copy(alpha = 0.4f)
+          room.status == com.example.model.ScanStatus.COMPLETED -> ScanCompletedGreen.copy(alpha = 0.75f)
+          else -> ElectricBlue.copy(alpha = 0.45f)
         }
 
-        // Base rectangle
+        // Base & Top & Pillars
         drawLine(boxColor, c1, c2, strokeWidth = if (isTarget) 3f else 1.5f)
         drawLine(boxColor, c2, c3, strokeWidth = if (isTarget) 3f else 1.5f)
         drawLine(boxColor, c3, c4, strokeWidth = if (isTarget) 3f else 1.5f)
         drawLine(boxColor, c4, c1, strokeWidth = if (isTarget) 3f else 1.5f)
 
-        // Top rectangle
         drawLine(boxColor, t1, t2, strokeWidth = if (isTarget) 3f else 1.5f)
         drawLine(boxColor, t2, t3, strokeWidth = if (isTarget) 3f else 1.5f)
         drawLine(boxColor, t3, t4, strokeWidth = if (isTarget) 3f else 1.5f)
         drawLine(boxColor, t4, t1, strokeWidth = if (isTarget) 3f else 1.5f)
 
-        // Pillars
         drawLine(boxColor, c1, t1, strokeWidth = 1f)
         drawLine(boxColor, c2, t2, strokeWidth = 1f)
         drawLine(boxColor, c3, t3, strokeWidth = 1f)
         drawLine(boxColor, c4, t4, strokeWidth = 1f)
 
-        // Room label in 3D
-        val labelPos = project3Dto2D(rx, wallHeight + 0.5f, rz)
+        // Room label and Dimensions in 3D
+        val labelPos = project3Dto2D(rx, wallHeight + 0.4f, rz)
         drawContext.canvas.nativeCanvas.drawText(
-          room.name.take(6),
+          "${room.name} (${room.width.toInt()}x${room.height.toInt()}m)",
           labelPos.x,
           labelPos.y,
           android.graphics.Paint().apply {
             color = if (isTarget) android.graphics.Color.CYAN else android.graphics.Color.WHITE
-            textSize = 28f
+            textSize = (24f * zoomScale).coerceIn(18f, 32f)
             isAntiAlias = true
             textAlign = android.graphics.Paint.Align.CENTER
           }
         )
       }
 
-      // Draw Point Cloud Particles
+      // 3. Draw Point Cloud Particles
       pointCloud.forEach { pt ->
         val screenPt = project3Dto2D(pt.x, pt.y, pt.z)
         drawCircle(
           color = pt.color,
-          radius = if (pt.color == ScanRescanRed) 3.5f else 2.2f,
+          radius = (2.4f * zoomScale).coerceIn(1.2f, 4.5f),
           center = screenPt
         )
       }
 
-      // Draw 3D User Pose Marker
+      // 4. Draw Captured Keyframe Images (📷 3D Pins & Direction)
+      capturedImages.forEach { img ->
+        val imgPos = project3Dto2D(img.worldX, img.worldY, img.worldZ)
+        val isSelected = img.id == selectedImageId
+
+        // Pin billboard
+        drawCircle(
+          color = if (isSelected) CyanNeon else Color(0xFF0284C7),
+          radius = if (isSelected) 10f * zoomScale.coerceIn(0.8f, 1.8f) else 7f * zoomScale.coerceIn(0.8f, 1.5f),
+          center = imgPos
+        )
+        drawCircle(
+          color = Color.White,
+          radius = 3f * zoomScale.coerceIn(0.8f, 1.5f),
+          center = imgPos
+        )
+
+        // Draw camera look vector line
+        val yawImgRad = Math.toRadians(img.cameraRotationYaw.toDouble()).toFloat()
+        val lookX = img.worldX + 1.2f * sin(yawImgRad)
+        val lookZ = img.worldZ - 1.2f * cos(yawImgRad)
+        val lookPos = project3Dto2D(lookX, img.worldY, lookZ)
+
+        drawLine(
+          color = if (isSelected) CyanNeon else Color(0xFF38BDF8),
+          start = imgPos,
+          end = lookPos,
+          strokeWidth = 2f
+        )
+      }
+
+      // 5. Draw 3D User Pose Marker
       val userX3D = (userPose.x - 28f) * 0.7f
       val userZ3D = (userPose.y - 19f) * 0.7f
       val userScreen = project3Dto2D(userX3D, -1.8f, userZ3D)
-      val userScreenHead = project3Dto2D(userX3D, 0.5f, userZ3D)
+      val userScreenHead = project3Dto2D(userX3D, 0.4f, userZ3D)
 
-      // User column line
       drawLine(
         color = CyanNeon,
         start = userScreen,
         end = userScreenHead,
-        strokeWidth = 3f
+        strokeWidth = 3.5f
       )
       drawCircle(
         color = CyanNeon,
-        radius = 8f,
+        radius = 8f * zoomScale.coerceIn(0.8f, 1.6f),
         center = userScreenHead
       )
       drawCircle(
         color = Color.White,
-        radius = 4f,
+        radius = 3.5f * zoomScale.coerceIn(0.8f, 1.6f),
         center = userScreenHead
       )
 
-      // LiDAR Laser Scanline Sweep
-      val scanYPos = -2f + laserY * 4.5f
-      val scanP1 = project3Dto2D(-18f, scanYPos, -12f)
-      val scanP2 = project3Dto2D(18f, scanYPos, -12f)
-      val scanP3 = project3Dto2D(18f, scanYPos, 12f)
-      val scanP4 = project3Dto2D(-18f, scanYPos, 12f)
+      // 6. LiDAR Laser Scanline Sweep
+      val scanYPos = -1.8f + laserY * 4.2f
+      val scanP1 = project3Dto2D(-20f, scanYPos, -14f)
+      val scanP2 = project3Dto2D(20f, scanYPos, -14f)
+      val scanP3 = project3Dto2D(20f, scanYPos, 14f)
+      val scanP4 = project3Dto2D(-20f, scanYPos, 14f)
 
       val laserPath = Path().apply {
         moveTo(scanP1.x, scanP1.y)
@@ -378,7 +420,7 @@ fun Spatial3DScannerView(
         color = CyanNeon.copy(alpha = 0.08f)
       )
       drawLine(
-        color = CyanNeon.copy(alpha = 0.7f),
+        color = CyanNeon.copy(alpha = 0.75f),
         start = scanP1,
         end = scanP2,
         strokeWidth = 2f,
@@ -386,7 +428,7 @@ fun Spatial3DScannerView(
       )
     }
 
-    // Top overlay badge: 3D Scanner Active status
+    // Top overlay badge: 3D Scanner Active status & Meshes count
     Row(
       modifier = Modifier
         .align(Alignment.TopStart)
@@ -394,7 +436,7 @@ fun Spatial3DScannerView(
         .clip(RoundedCornerShape(6.dp))
         .background(Color(0xCC0B132B))
         .border(1.dp, SpaceCardBorder, RoundedCornerShape(6.dp))
-        .padding(horizontal = 8.dp, vertical = 4.dp),
+        .padding(horizontal = 8.dp, vertical = 5.dp),
       verticalAlignment = Alignment.CenterVertically
     ) {
       Box(
@@ -405,117 +447,73 @@ fun Spatial3DScannerView(
       )
       Spacer(modifier = Modifier.width(6.dp))
       Text(
-        text = if (hasScannedData) "3D 실시간 공간 매핑 중..." else "3D 스캔 준비 (데이터 대기 중)",
+        text = if (realMeshes.isNotEmpty()) "3D 공간 메쉬: ${realMeshes.size}개 | ${pointCloud.size} 포인트"
+        else if (hasScannedData) "3D 실시간 공간 매핑 중 (${pointCloud.size} pts)"
+        else "3D 스캔 데이터 대기 중",
         color = Color.White,
         fontSize = 11.sp,
         fontWeight = FontWeight.Bold
       )
     }
 
-    // Empty state overlay for fresh project
-    if (!hasScannedData) {
-      Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-      ) {
-        Column(
-          horizontalAlignment = Alignment.CenterHorizontally,
-          modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xCC0B132B))
-            .border(1.dp, SpaceCardBorder, RoundedCornerShape(12.dp))
-            .padding(horizontal = 20.dp, vertical = 14.dp)
-        ) {
-          Icon(
-            imageVector = Icons.Default.ViewInAr,
-            contentDescription = null,
-            tint = Color(0xFF64748B),
-            modifier = Modifier.size(36.dp)
-          )
-          Spacer(modifier = Modifier.height(8.dp))
-          Text(
-            text = "아직 3D 스캔 데이터 없음",
-            color = Color.White,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold
-          )
-          Spacer(modifier = Modifier.height(4.dp))
-          Text(
-            text = "카메라를 움직여 3D 포인트 클라우드를 수집하세요",
-            color = CyanNeon,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium
-          )
-        }
-      }
-    }
-
-    // Camera feed toggle button & Perspective reset
-    Row(
+    // Camera view mode selector & reset controls (Top Right)
+    Column(
       modifier = Modifier
         .align(Alignment.TopEnd)
-        .padding(8.dp)
+        .padding(8.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-      IconButton(
-        onClick = onToggleCameraFeed,
+      // Orbit / 1st-Person / Top View Mode Toggle
+      Row(
         modifier = Modifier
-          .clip(CircleShape)
-          .background(Color(0xCC1E293B))
+          .clip(RoundedCornerShape(16.dp))
+          .background(Color(0xCC0B1120))
+          .border(0.8.dp, SpaceCardBorder, RoundedCornerShape(16.dp))
+          .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
       ) {
-        Icon(
-          imageVector = Icons.Default.CameraAlt,
-          contentDescription = "카메라 뷰 토글",
-          tint = if (isCameraFeedEnabled) CyanNeon else Color.Gray,
-          modifier = Modifier.size(18.dp)
-        )
+        View3DMode.values().forEach { mode ->
+          val isSelected = viewMode == mode
+          Surface(
+            color = if (isSelected) CyanNeon else Color.Transparent,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.clip(RoundedCornerShape(12.dp))
+          ) {
+            Text(
+              text = when (mode) {
+                View3DMode.ORBIT -> "궤도"
+                View3DMode.FIRST_PERSON -> "1인칭"
+                View3DMode.TOP_DOWN -> "조감도"
+              },
+              color = if (isSelected) Color(0xFF0F172A) else Color(0xFFCBD5E1),
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Bold,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+          }
+        }
       }
 
-      Spacer(modifier = Modifier.width(6.dp))
-
+      // Reset View Button
       IconButton(
         onClick = {
           yawAngle = 45f
-          pitchAngle = 28f
-          zoomScale = 1f
+          pitchAngle = 32f
+          zoomScale = 1.0f
+          panOffset = Offset.Zero
+          viewMode = View3DMode.ORBIT
         },
         modifier = Modifier
-          .clip(CircleShape)
-          .background(Color(0xCC1E293B))
+          .align(Alignment.End)
+          .size(30.dp)
+          .background(Color(0xCC0B1120), CircleShape)
+          .border(0.8.dp, SpaceCardBorder, CircleShape)
       ) {
         Icon(
-          imageVector = Icons.Default.ViewInAr,
+          imageVector = Icons.Default.CenterFocusStrong,
           contentDescription = "3D 뷰 리셋",
-          tint = Color.White,
-          modifier = Modifier.size(18.dp)
-        )
-      }
-    }
-
-    // Bottom warning chip if near low-quality unscanned wall
-    val warningRoom = floor.rooms.find { it.status == com.example.model.ScanStatus.RESCAN_NEEDED }
-    if (warningRoom != null) {
-      Row(
-        modifier = Modifier
-          .align(Alignment.BottomStart)
-          .padding(8.dp)
-          .clip(RoundedCornerShape(8.dp))
-          .background(Color(0xCC7F1D1D))
-          .border(1.dp, ScanRescanRed, RoundedCornerShape(8.dp))
-          .padding(horizontal = 8.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Icon(
-          imageVector = Icons.Default.Warning,
-          contentDescription = "스캔 품질 경고",
-          tint = ScanRescanRed,
-          modifier = Modifier.size(14.dp)
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-          text = "재스캔 필요: ${warningRoom.missingAreas.firstOrNull()?.title ?: warningRoom.name}",
-          color = Color.White,
-          fontSize = 10.sp,
-          fontWeight = FontWeight.SemiBold
+          tint = CyanNeon,
+          modifier = Modifier.size(16.dp)
         )
       }
     }

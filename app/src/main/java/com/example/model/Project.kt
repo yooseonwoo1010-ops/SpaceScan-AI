@@ -17,5 +17,7 @@ data class Project(
   val currentPosition: UserPose? = null,
   val status: String = "NEW", // "NEW" | "SCANNING" | "COMPLETED"
   val segments: List<ScanSegment> = emptyList(),
+  val capturedImages: List<ScanImage> = emptyList(),
+  val accumulatedMeshes: List<ScanMesh> = emptyList(),
   val building: Building? = null
 )
