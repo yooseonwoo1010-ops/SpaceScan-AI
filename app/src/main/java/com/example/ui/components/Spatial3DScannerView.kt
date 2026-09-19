@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -119,33 +120,39 @@ fun Spatial3DScannerView(
     label = "laserY"
   )
 
-  // Generate realistic architectural 3D point cloud
-  val pointCloud = remember(floor.id) {
-    val list = mutableListOf<CloudPoint>()
-    val rng = Random(floor.id.hashCode())
+  val hasScannedData = floor.rooms.isNotEmpty() || floor.coveragePercent > 0
 
-    // Corridor and Room wall & floor points
-    for (i in 0..300) {
-      val x = rng.nextFloat() * 40f - 20f
-      val y = rng.nextFloat() * 4f - 2f // height
-      val z = rng.nextFloat() * 30f - 15f
-      val c = when (rng.nextInt(4)) {
-        0 -> CyanNeon.copy(alpha = 0.8f)
-        1 -> ElectricBlue.copy(alpha = 0.7f)
-        2 -> ScanCompletedGreen.copy(alpha = 0.8f)
-        else -> Color(0xFF90E0EF)
+  // Generate realistic architectural 3D point cloud (only when scanned or demo data exists)
+  val pointCloud = remember(floor.id, hasScannedData) {
+    if (!hasScannedData) {
+      emptyList<CloudPoint>()
+    } else {
+      val list = mutableListOf<CloudPoint>()
+      val rng = Random(floor.id.hashCode())
+
+      // Corridor and Room wall & floor points
+      for (i in 0..300) {
+        val x = rng.nextFloat() * 40f - 20f
+        val y = rng.nextFloat() * 4f - 2f // height
+        val z = rng.nextFloat() * 30f - 15f
+        val c = when (rng.nextInt(4)) {
+          0 -> CyanNeon.copy(alpha = 0.8f)
+          1 -> ElectricBlue.copy(alpha = 0.7f)
+          2 -> ScanCompletedGreen.copy(alpha = 0.8f)
+          else -> Color(0xFF90E0EF)
+        }
+        list.add(CloudPoint(x, y, z, c))
       }
-      list.add(CloudPoint(x, y, z, c))
-    }
 
-    // Add Red alert warning point cloud for 201호 북쪽 벽 (low quality area)
-    for (i in 0..60) {
-      val x = rng.nextFloat() * 8f - 14f
-      val y = rng.nextFloat() * 3f
-      val z = rng.nextFloat() * 2f + 8f
-      list.add(CloudPoint(x, y, z, ScanRescanRed))
+      // Add Red alert warning point cloud for low quality area
+      for (i in 0..60) {
+        val x = rng.nextFloat() * 8f - 14f
+        val y = rng.nextFloat() * 3f
+        val z = rng.nextFloat() * 2f + 8f
+        list.add(CloudPoint(x, y, z, ScanRescanRed))
+      }
+      list
     }
-    list
   }
 
   Box(
@@ -382,15 +389,53 @@ fun Spatial3DScannerView(
         modifier = Modifier
           .size(8.dp)
           .clip(CircleShape)
-          .background(CyanNeon)
+          .background(if (hasScannedData) CyanNeon else Color.Gray)
       )
       Spacer(modifier = Modifier.width(6.dp))
       Text(
-        text = "3D 실시간 공간 매핑 중...",
+        text = if (hasScannedData) "3D 실시간 공간 매핑 중..." else "3D 스캔 준비 (데이터 대기 중)",
         color = Color.White,
         fontSize = 11.sp,
         fontWeight = FontWeight.Bold
       )
+    }
+
+    // Empty state overlay for fresh project
+    if (!hasScannedData) {
+      Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+      ) {
+        Column(
+          horizontalAlignment = Alignment.CenterHorizontally,
+          modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xCC0B132B))
+            .border(1.dp, SpaceCardBorder, RoundedCornerShape(12.dp))
+            .padding(horizontal = 20.dp, vertical = 14.dp)
+        ) {
+          Icon(
+            imageVector = Icons.Default.ViewInAr,
+            contentDescription = null,
+            tint = Color(0xFF64748B),
+            modifier = Modifier.size(36.dp)
+          )
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = "아직 3D 스캔 데이터 없음",
+            color = Color.White,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold
+          )
+          Spacer(modifier = Modifier.height(4.dp))
+          Text(
+            text = "카메라를 움직여 3D 포인트 클라우드를 수집하세요",
+            color = CyanNeon,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
+          )
+        }
+      }
     }
 
     // Camera feed toggle button & Perspective reset

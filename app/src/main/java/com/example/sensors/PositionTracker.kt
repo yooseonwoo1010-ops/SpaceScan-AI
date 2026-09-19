@@ -92,6 +92,43 @@ class PositionTracker(context: Context, private val scope: CoroutineScope) : Sen
     _isDemoMode.value = isDemo
   }
 
+  fun resetForProject(isDemoMode: Boolean, initialFloorId: String = "1F") {
+    _isDemoMode.value = isDemoMode
+    if (isDemoMode) {
+      currentWaypointIndex = 5
+      _userPose.value = UserPose(
+        x = 21f,
+        y = 19f,
+        z = 0f,
+        yawDegrees = 90f,
+        floorId = "2F",
+        confidence = ConfidenceLevel.HIGH,
+        estimatedAccuracyMeters = 1.2f
+      )
+      _breadcrumbs.value = listOf(
+        Pair(6f, 19f),
+        Pair(10f, 19f),
+        Pair(15f, 19f),
+        Pair(18f, 19f),
+        Pair(21f, 19f)
+      )
+    } else {
+      currentWaypointIndex = 0
+      _userPose.value = UserPose(
+        x = 0f,
+        y = 0f,
+        z = 0f,
+        yawDegrees = 0f,
+        floorId = initialFloorId,
+        confidence = ConfidenceLevel.LOW,
+        estimatedAccuracyMeters = 5.0f
+      )
+      _breadcrumbs.value = emptyList()
+    }
+    _floorTransitionMessage.value = null
+    _relocalizationState.value = RelocalizationState()
+  }
+
   fun setFloor(floorId: String) {
     val current = _userPose.value
     if (current.floorId != floorId) {
@@ -128,6 +165,17 @@ class PositionTracker(context: Context, private val scope: CoroutineScope) : Sen
     val updatedList = _breadcrumbs.value.toMutableList()
     updatedList.add(Pair(x, y))
     _breadcrumbs.value = updatedList
+  }
+
+  fun rotateHeading(deltaDegrees: Float) {
+    val current = _userPose.value
+    val newYaw = (current.yawDegrees + deltaDegrees + 360f) % 360f
+    _userPose.value = current.copy(yawDegrees = newYaw)
+  }
+
+  fun setHeading(degrees: Float) {
+    val current = _userPose.value
+    _userPose.value = current.copy(yawDegrees = (degrees + 360f) % 360f)
   }
 
   fun relocalize(onCompleted: (String) -> Unit) {

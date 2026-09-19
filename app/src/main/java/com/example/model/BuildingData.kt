@@ -1,10 +1,12 @@
 package com.example.model
 
-enum class ScanStatus {
-  COMPLETED,
-  IN_PROGRESS,
-  UNSCANNED,
-  RESCAN_NEEDED
+enum class ScanStatus(val displayName: String, val emoji: String) {
+  COMPLETED("스캔 완료", "🟩"),
+  IN_PROGRESS("스캔 진행 중", "🟦"),
+  UNSCANNED("미스캔", "⬜"),
+  LOW_QUALITY("품질 낮음", "🟨"),
+  RESCAN_NEEDED("재스캔 필요", "🟥"),
+  AI_RECOMMENDED("AI 추천", "🟪")
 }
 
 enum class ConfidenceLevel(val label: String, val score: Float, val dots: String) {

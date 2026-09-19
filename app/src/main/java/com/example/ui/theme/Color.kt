@@ -16,12 +16,20 @@ val DeepBlueAccent = Color(0xFF0D47A1)
 val VioletNeon = Color(0xFF7C4DFF)
 val PurpleNeon = Color(0xFFB388FF)
 
-// Status & Scan States
-val ScanCompletedGreen = Color(0xFF00E676)
-val ScanInProgressAmber = Color(0xFFFFB300)
-val ScanUnscannedSlate = Color(0xFF374151)
-val ScanRescanRed = Color(0xFFFF3D71)
-val ScanQualityWarning = Color(0xFFFF9100)
+// Unified 6-Color Scan System
+val ScanGreenCompleted = Color(0xFF10B981)   // 🟩 스캔 완료
+val ScanBlueInProgress = Color(0xFF3B82F6)   // 🟦 현재 스캔 진행 중
+val ScanGrayUnscanned = Color(0xFF64748B)    // ⬜ 아직 스캔되지 않은 영역
+val ScanYellowLowQuality = Color(0xFFF59E0B) // 🟨 스캔 품질 낮음 / 추가 권장
+val ScanRedRescan = Color(0xFFEF4444)        // 🟥 재스캔 필요
+val ScanPurpleAi = Color(0xFFA855F7)         // 🟪 AI 추천 다음 스캔 영역
+
+// Backward compatibility aliases
+val ScanCompletedGreen = ScanGreenCompleted
+val ScanInProgressAmber = ScanBlueInProgress
+val ScanUnscannedSlate = ScanGrayUnscanned
+val ScanRescanRed = ScanRedRescan
+val ScanQualityWarning = ScanYellowLowQuality
 
 // Text & Content
 val TextPrimary = Color(0xFFF3F4F6)

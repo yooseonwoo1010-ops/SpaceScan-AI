@@ -19,15 +19,20 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
-import com.example.model.MockSchoolBuilding
+import com.example.data.ProjectRepository
+import com.example.model.Project
 import com.example.sensors.PositionTracker
 import com.example.sensors.VoiceAssistant
 import com.example.ui.screens.MainStartScreen
+import com.example.ui.screens.NewProjectScreen
+import com.example.ui.screens.ProjectListScreen
 import com.example.ui.screens.ScanWorkspaceScreen
 import com.example.ui.theme.MyApplicationTheme
 
 enum class AppScreen {
   START,
+  NEW_PROJECT,
+  PROJECT_LIST,
   WORKSPACE
 }
 
@@ -54,8 +59,12 @@ class MainActivity : ComponentActivity() {
             VoiceAssistant(context).also { voiceAssistant = it }
           }
 
+          // Persistent Project Repository & Project State
+          val projectRepository = remember { ProjectRepository(context) }
+          var currentProject by remember { mutableStateOf<Project?>(null) }
+          var isNewlyCreatedProject by remember { mutableStateOf(false) }
+
           var currentScreen by remember { mutableStateOf(AppScreen.START) }
-          val building: com.example.model.Building = remember { MockSchoolBuilding.schoolBuilding }
 
           // Camera permission launcher
           val cameraPermissionLauncher = rememberLauncherForActivityResult(
@@ -76,38 +85,82 @@ class MainActivity : ComponentActivity() {
           when (currentScreen) {
             AppScreen.START -> {
               MainStartScreen(
-                onStartRealScan = {
-                  val hasPermission = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.CAMERA
-                  ) == PackageManager.PERMISSION_GRANTED
-
-                  if (hasPermission) {
-                    tracker.setDemoMode(false)
-                    currentScreen = AppScreen.WORKSPACE
-                    voice.speak("실시간 3D 스캔 모드를 시작합니다. 주변을 카메라로 천천히 비추세요.")
-                  } else {
-                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                  }
+                onNewProjectClick = {
+                  currentScreen = AppScreen.NEW_PROJECT
                 },
                 onStartDemoMode = {
+                  val demoProject = projectRepository.getProjectById("project_sejong_default")
+                    ?: projectRepository.projects.value.firstOrNull()
+                  currentProject = demoProject
                   tracker.setDemoMode(true)
+                  isNewlyCreatedProject = false
                   currentScreen = AppScreen.WORKSPACE
                   voice.speak("SpaceScan AI 가상 데모 모드를 시작합니다. 현재 위치는 2층 복도입니다.")
                 },
                 onOpenProject = {
-                  tracker.setDemoMode(true)
+                  currentScreen = AppScreen.PROJECT_LIST
+                }
+              )
+            }
+
+            AppScreen.NEW_PROJECT -> {
+              NewProjectScreen(
+                repository = projectRepository,
+                onBackClick = {
+                  currentScreen = AppScreen.START
+                },
+                onProjectCreated = { createdProject ->
+                  currentProject = createdProject
+                  isNewlyCreatedProject = true
+
+                  if (createdProject.mode == "REAL") {
+                    val hasPermission = ContextCompat.checkSelfPermission(
+                      context,
+                      Manifest.permission.CAMERA
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (hasPermission) {
+                      tracker.setDemoMode(false)
+                      currentScreen = AppScreen.WORKSPACE
+                      voice.speak("${createdProject.name} 스캔을 시작합니다. 주변을 카메라로 비추세요.")
+                    } else {
+                      cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                  } else {
+                    tracker.setDemoMode(true)
+                    currentScreen = AppScreen.WORKSPACE
+                    voice.speak("${createdProject.name} 가상 데모 모드를 시작합니다.")
+                  }
+                }
+              )
+            }
+
+            AppScreen.PROJECT_LIST -> {
+              ProjectListScreen(
+                repository = projectRepository,
+                currentProjectId = currentProject?.id,
+                onBackClick = {
+                  currentScreen = AppScreen.START
+                },
+                onNewProjectClick = {
+                  currentScreen = AppScreen.NEW_PROJECT
+                },
+                onSelectProject = { selectedProject ->
+                  currentProject = selectedProject
+                  isNewlyCreatedProject = false
+                  tracker.setDemoMode(selectedProject.mode == "DEMO")
                   currentScreen = AppScreen.WORKSPACE
-                  voice.speak("세종관 프로젝트를 불러왔습니다. 2층 지도를 확인하세요.")
+                  voice.speak("${selectedProject.name} 프로젝트를 불러왔습니다.")
                 }
               )
             }
 
             AppScreen.WORKSPACE -> {
               ScanWorkspaceScreen(
-                building = building,
+                project = currentProject,
                 tracker = tracker,
                 voiceAssistant = voice,
+                isNewlyCreated = isNewlyCreatedProject,
                 onExit = {
                   currentScreen = AppScreen.START
                 }

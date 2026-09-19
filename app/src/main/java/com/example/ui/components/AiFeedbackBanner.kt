@@ -179,38 +179,40 @@ fun AiFeedbackBanner(
       ) {
         Column(modifier = Modifier.weight(1f)) {
           Text(
-            text = recommendation?.feedbackSpeech ?: "앞쪽 복도를 먼저 스캔하세요.",
+            text = recommendation?.feedbackSpeech ?: "아직 스캔 데이터가 없습니다. 카메라를 움직여 스캔을 시작하세요.",
             color = Color.White,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold
           )
           Spacer(modifier = Modifier.height(2.dp))
           Text(
-            text = "추천 이유: ${recommendation?.reason ?: "현재 위치와 가깝고 미스캔 영역"}",
+            text = if (recommendation != null) "추천 이유: ${recommendation.reason}" else "공간 인식을 위해 스마트폰 카메라로 주변 벽면을 둘러보세요.",
             color = Color(0xFF94A3B8),
             fontSize = 11.sp,
             maxLines = 1
           )
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
+        if (recommendation != null) {
+          Spacer(modifier = Modifier.width(8.dp))
 
-        Button(
-          onClick = onViewRouteClick,
-          colors = ButtonDefaults.buttonColors(
-            containerColor = ElectricBlue,
-            contentColor = Color.White
-          ),
-          shape = RoundedCornerShape(8.dp),
-          contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-        ) {
-          Icon(
-            imageVector = Icons.Default.Navigation,
-            contentDescription = "경로",
-            modifier = Modifier.size(14.dp)
-          )
-          Spacer(modifier = Modifier.width(4.dp))
-          Text(text = "경로 보기", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+          Button(
+            onClick = onViewRouteClick,
+            colors = ButtonDefaults.buttonColors(
+              containerColor = ElectricBlue,
+              contentColor = Color.White
+            ),
+            shape = RoundedCornerShape(8.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.Navigation,
+              contentDescription = "경로",
+              modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(text = "경로 보기", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+          }
         }
       }
     }

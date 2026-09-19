@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Elevator
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MeetingRoom
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Stairs
@@ -68,6 +69,7 @@ import com.example.model.ScanStatus
 import com.example.model.UserPose
 import com.example.ui.theme.CyanNeon
 import com.example.ui.theme.ElectricBlue
+import com.example.ui.theme.ScanVisualSystem
 import com.example.ui.theme.ScanCompletedGreen
 import com.example.ui.theme.ScanInProgressAmber
 import com.example.ui.theme.ScanRescanRed
@@ -199,23 +201,19 @@ fun Indoor2DMapView(
           val roomWidthPx = room.width * baseScale
           val roomHeightPx = room.height * baseScale
 
-          val fillColor = when (room.status) {
-            ScanStatus.COMPLETED -> ScanCompletedGreen.copy(alpha = 0.22f)
-            ScanStatus.IN_PROGRESS -> CyanNeon.copy(alpha = 0.20f)
-            ScanStatus.UNSCANNED -> ScanUnscannedSlate.copy(alpha = 0.35f)
-            ScanStatus.RESCAN_NEEDED -> ScanRescanRed.copy(alpha = 0.25f)
-          }
+          val isAiTarget = room.id == recommendation?.nextTargetRoomId
+          val statusColor = ScanVisualSystem.getColor(room.status, isAiTarget)
+          val fillAlpha = ScanVisualSystem.getMapFillAlpha(room.status, isAiTarget)
+
+          val fillColor = statusColor.copy(alpha = fillAlpha)
 
           val borderColor = when {
             room.id == selectedRoomId -> CyanNeon
-            room.id == recommendation?.nextTargetRoomId -> ElectricBlue
-            room.status == ScanStatus.RESCAN_NEEDED -> ScanRescanRed
-            room.status == ScanStatus.COMPLETED -> ScanCompletedGreen
-            room.status == ScanStatus.IN_PROGRESS -> CyanNeon
-            else -> SpaceCardBorder
+            isAiTarget -> ScanVisualSystem.AiRecommended
+            else -> statusColor
           }
 
-          val strokeWidth = if (room.id == selectedRoomId || room.id == recommendation?.nextTargetRoomId) 4f else 2f
+          val strokeWidth = if (room.id == selectedRoomId || isAiTarget) 4f else 2f
 
           // Room background
           drawRoundRect(
@@ -451,6 +449,44 @@ fun Indoor2DMapView(
           center = userCenter
         )
       }
+
+      val hasMapData = floor.rooms.isNotEmpty() || floor.corridors.isNotEmpty()
+      if (!hasMapData) {
+        Box(
+          modifier = Modifier.fillMaxSize(),
+          contentAlignment = Alignment.Center
+        ) {
+          Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+              .clip(RoundedCornerShape(12.dp))
+              .background(Color(0xCC0B132B))
+              .border(1.dp, SpaceCardBorder, RoundedCornerShape(12.dp))
+              .padding(horizontal = 20.dp, vertical = 14.dp)
+          ) {
+            Icon(
+              imageVector = Icons.Default.Map,
+              contentDescription = null,
+              tint = Color(0xFF64748B),
+              modifier = Modifier.size(36.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+              text = "아직 지도 없음",
+              color = Color.White,
+              fontSize = 15.sp,
+              fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+              text = "공간을 스캔하면 2D 평면도가 실시간 생성됩니다",
+              color = CyanNeon,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Medium
+            )
+          }
+        }
+      }
     }
 
     // Bottom info strip: Current Location & Legend
@@ -508,14 +544,14 @@ fun MapLegendBar() {
     horizontalArrangement = Arrangement.spacedBy(10.dp),
     verticalArrangement = Arrangement.spacedBy(4.dp)
   ) {
-    LegendItem(color = ScanCompletedGreen, label = "스캔 완료")
-    LegendItem(color = CyanNeon, label = "스캔 진행 중")
-    LegendItem(color = ScanUnscannedSlate, label = "미스캔")
-    LegendItem(color = ScanRescanRed, label = "재스캔 필요")
+    LegendItem(color = ScanVisualSystem.Completed, label = "스캔 완료")
+    LegendItem(color = ScanVisualSystem.InProgress, label = "스캔 진행 중")
+    LegendItem(color = ScanVisualSystem.Unscanned, label = "미스캔")
+    LegendItem(color = ScanVisualSystem.LowQuality, label = "품질 낮음")
+    LegendItem(color = ScanVisualSystem.RescanNeeded, label = "재스캔 필요")
+    LegendItem(color = ScanVisualSystem.AiRecommended, label = "AI 추천")
     LegendIconItem(icon = Icons.Default.Stairs, label = "계단")
-    LegendIconItem(icon = Icons.Default.Elevator, label = "엘리베이터")
-    LegendIconItem(icon = Icons.Default.Wc, label = "화장실")
-    LegendIconItem(icon = Icons.Default.MeetingRoom, label = "출입구")
+    LegendIconItem(icon = Icons.Default.Elevator, label = "EV")
   }
 }
 

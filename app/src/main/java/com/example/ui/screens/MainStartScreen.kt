@@ -56,7 +56,7 @@ import com.example.ui.theme.SpaceSurfaceElevated
 
 @Composable
 fun MainStartScreen(
-  onStartRealScan: () -> Unit,
+  onNewProjectClick: () -> Unit,
   onStartDemoMode: () -> Unit,
   onOpenProject: () -> Unit
 ) {
@@ -232,10 +232,10 @@ fun MainStartScreen(
         ActionFeatureCard(
           icon = Icons.Default.QrCodeScanner,
           title = "새 프로젝트 시작",
-          subtitle = "실제 카메라 및 센서로 건물 스캔을 시작합니다",
+          subtitle = "새로운 프로젝트를 생성하고 3D/2D 건물 스캔을 시작합니다",
           gradient = Brush.horizontalGradient(listOf(ElectricBlue, Color(0xFF0077B6))),
           isHighlighted = true,
-          onClick = onStartRealScan
+          onClick = onNewProjectClick
         )
 
         // Button 2: 기존 프로젝트 불러오기

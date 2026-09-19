@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -47,7 +48,8 @@ fun TopScanBar(
   isDemoMode: Boolean,
   onRelocalizeClick: () -> Unit,
   onCoverageDetailsClick: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  projectName: String = ""
 ) {
   Box(
     modifier = modifier
@@ -67,8 +69,27 @@ fun TopScanBar(
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      // Left: Floor badge & Scan coverage
+      // Left: Project Name, Floor badge & Scan coverage
       Row(verticalAlignment = Alignment.CenterVertically) {
+        if (projectName.isNotEmpty()) {
+          Box(
+            modifier = Modifier
+              .clip(RoundedCornerShape(6.dp))
+              .background(Color(0xFF0F172A))
+              .border(0.8.dp, CyanNeon.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+              .padding(horizontal = 7.dp, vertical = 4.dp)
+          ) {
+            Text(
+              text = projectName,
+              color = Color.White,
+              fontWeight = FontWeight.Bold,
+              fontSize = 11.sp,
+              maxLines = 1
+            )
+          }
+          Spacer(modifier = Modifier.width(6.dp))
+        }
+
         Box(
           modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
@@ -151,7 +172,7 @@ fun TopScanBar(
           }
 
           Text(
-            text = "약 ${userPose.estimatedAccuracyMeters}m ${userPose.confidence.dots}",
+            text = "${userPose.confidence.dots} (${userPose.estimatedAccuracyMeters}m)",
             color = CyanNeon,
             fontSize = 10.sp,
             letterSpacing = 1.sp
@@ -170,6 +191,47 @@ fun TopScanBar(
           )
         }
       }
+    }
+
+    // Sub-bar: Current Location, Camera Direction, Depth & ARCore Sensor Status (Section 8)
+    Spacer(modifier = Modifier.height(4.dp))
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(6.dp))
+        .background(Color(0xFF0F172A).copy(alpha = 0.85f))
+        .border(0.6.dp, SpaceCardBorder, RoundedCornerShape(6.dp))
+        .padding(horizontal = 8.dp, vertical = 4.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Text(
+        text = "현재 위치: ${userPose.floorId} 중앙 복도",
+        color = Color(0xFFE2E8F0),
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Medium
+      )
+      val dirLabel = when (((userPose.yawDegrees + 22.5f) % 360f / 45f).toInt()) {
+        0 -> "북쪽 (N)"
+        1 -> "북동쪽 (NE)"
+        2 -> "동쪽 (E)"
+        3 -> "남동쪽 (SE)"
+        4 -> "남쪽 (S)"
+        5 -> "남서쪽 (SW)"
+        6 -> "서쪽 (W)"
+        else -> "북서쪽 (NW)"
+      }
+      Text(
+        text = "방향: $dirLabel",
+        color = CyanNeon,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.SemiBold
+      )
+      Text(
+        text = "Depth: 지원 · ARCore: 활성화",
+        color = Color(0xFF94A3B8),
+        fontSize = 10.sp
+      )
     }
   }
 }
