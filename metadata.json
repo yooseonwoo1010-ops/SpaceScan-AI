@@ -1,0 +1,6 @@
+{
+  "name": "SpaceScan AI",
+  "description": "3D 실내 공간 스캔, 2D 평면도 자동 생성, 층별 실내 위치 추적 및 AI 실시간 스캔 경로 가이드",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
