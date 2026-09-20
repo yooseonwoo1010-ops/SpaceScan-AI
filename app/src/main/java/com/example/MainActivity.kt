@@ -99,6 +99,9 @@ class MainActivity : ComponentActivity() {
                 },
                 onOpenProject = {
                   currentScreen = AppScreen.PROJECT_LIST
+                },
+                onRequestCameraPermission = {
+                  cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 }
               )
             }
